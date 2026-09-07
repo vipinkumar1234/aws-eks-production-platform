@@ -1,0 +1,4 @@
+crds:
+  enabled: true
+securityContext:
+  runAsNonRoot: true

@@ -1,0 +1,7 @@
+prometheus:
+  prometheusSpec:
+    retention: 15d
+    securityContext:
+      runAsNonRoot: true
+    podSecurityPolicy:
+      enabled: false

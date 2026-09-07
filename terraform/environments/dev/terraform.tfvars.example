@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars only for local use; never commit secrets.
+project = "eks-platform"
+admin_role_arns = ["arn:aws:iam::000000000000:role/platform-admin"]
+github_oidc_subjects = ["repo:ORG/REPO:ref:refs/heads/main"]
+app_domain = "dev.game.example.com"
+route53_zone_id = "Z00000000000000000000"

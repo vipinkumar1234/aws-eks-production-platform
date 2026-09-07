@@ -1,0 +1,140 @@
+name: terraform
+on:
+  pull_request:
+    branches: [main]
+    paths: [terraform/**]
+  push:
+    branches: [main, "feat*"]
+    paths: [terraform/**]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to destroy
+        required: true
+        type: choice
+        options: [dev, prod]
+      confirmation:
+        description: Type DESTROY-DEV or DESTROY-PROD exactly
+        required: true
+        type: string
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: { environment: [dev, prod] }
+    defaults:
+      run:
+        working-directory: terraform/environments/${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive ../../..
+      - run: terraform init -backend=false
+      - run: terraform validate
+      - uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: terraform/environments/${{ matrix.environment }}
+          minimum_severity: HIGH
+  plan:
+    needs: validate
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat')
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      TF_VAR_infra_version: ${{ github.head_ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ap-southeast-1
+      - run: terraform -chdir=terraform/environments/dev init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET_DEV }}" -backend-config="key=eks/dev/terraform.tfstate" -backend-config="region=ap-southeast-1" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
+      - run: terraform -chdir=terraform/environments/dev plan -no-color
+
+  deploy-dev:
+    needs: validate
+    if: github.event_name == 'push' && startsWith(github.ref_name, 'feat')
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      TF_VAR_infra_version: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ap-southeast-1
+      - run: terraform -chdir=terraform/environments/dev init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET_DEV }}" -backend-config="key=eks/dev/terraform.tfstate" -backend-config="region=ap-southeast-1" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
+      - run: terraform -chdir=terraform/environments/dev plan -out=dev.tfplan
+      - run: terraform -chdir=terraform/environments/dev apply -auto-approve dev.tfplan
+
+  plan-prod:
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      TF_VAR_infra_version: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PROD_TERRAFORM_ROLE_ARN }}
+          aws-region: us-east-1
+      - run: terraform -chdir=terraform/environments/prod init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET_PROD }}" -backend-config="key=eks/prod/terraform.tfstate" -backend-config="region=us-east-1" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
+      - run: terraform -chdir=terraform/environments/prod plan -no-color -out=prod.tfplan | tee terraform/environments/prod/prod-plan.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: terraform-prod-plan-${{ github.sha }}
+          path: |
+            terraform/environments/prod/prod.tfplan
+            terraform/environments/prod/prod-plan.txt
+          retention-days: 7
+
+  apply-prod:
+    needs: plan-prod
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+    env:
+      TF_VAR_infra_version: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/download-artifact@v4
+        with:
+          name: terraform-prod-plan-${{ github.sha }}
+          path: terraform/environments/prod
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PROD_TERRAFORM_ROLE_ARN }}
+          aws-region: us-east-1
+      - run: terraform -chdir=terraform/environments/prod init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET_PROD }}" -backend-config="key=eks/prod/terraform.tfstate" -backend-config="region=us-east-1" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
+      - run: terraform -chdir=terraform/environments/prod apply -auto-approve prod.tfplan
+
+  destroy:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      ((inputs.environment == 'dev' && inputs.confirmation == 'DESTROY-DEV') ||
+      (inputs.environment == 'prod' && inputs.confirmation == 'DESTROY-PROD'))
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+    env:
+      TF_VAR_infra_version: destroy-${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.environment == 'prod' && secrets.AWS_PROD_TERRAFORM_ROLE_ARN || secrets.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ inputs.environment == 'prod' && 'us-east-1' || 'ap-southeast-1' }}
+      - run: terraform -chdir=terraform/environments/${{ inputs.environment }} init -backend-config="bucket=${{ inputs.environment == 'prod' && secrets.TF_STATE_BUCKET_PROD || secrets.TF_STATE_BUCKET_DEV }}" -backend-config="key=eks/${{ inputs.environment }}/terraform.tfstate" -backend-config="region=${{ inputs.environment == 'prod' && 'us-east-1' || 'ap-southeast-1' }}" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
+      - run: terraform -chdir=terraform/environments/${{ inputs.environment }} plan -destroy -no-color -out=destroy.tfplan | tee terraform/environments/${{ inputs.environment }}/destroy-plan.txt
+      - run: terraform -chdir=terraform/environments/${{ inputs.environment }} apply -auto-approve destroy.tfplan

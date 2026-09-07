@@ -1,0 +1,5 @@
+alertmanager:
+  alertmanagerSpec:
+    replicas: 2
+    securityContext:
+      runAsNonRoot: true

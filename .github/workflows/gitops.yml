@@ -1,0 +1,23 @@
+name: gitops
+on:
+  pull_request:
+    paths: [gitops/**]
+permissions:
+  contents: read
+jobs:
+  validate-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+        with: { version: latest }
+      - uses: instrumenta/kubeval-action@master
+        with:
+          files: gitops
+          strict: true
+      - uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: gitops
+          framework: kubernetes
+          quiet: true
+          soft_fail: false

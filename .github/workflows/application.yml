@@ -1,0 +1,59 @@
+name: application
+on:
+  push:
+    branches: [main]
+    paths: [application/**]
+permissions:
+  contents: write
+  id-token: write
+  packages: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: python -m unittest discover -s tests -v
+        working-directory: application/sample-app
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_APP_ROLE_ARN }}
+          aws-region: ap-southeast-1
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - uses: docker/build-push-action@v6
+        with:
+          context: application/sample-app
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: 1
+      - name: Update dev GitOps image
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          manifest = Path("gitops/apps/sample-app/deployment.yaml")
+          content = manifest.read_text()
+          repository = "${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}"
+          lines = content.splitlines()
+          for index, line in enumerate(lines):
+              if "image:" in line:
+                  lines[index] = f"          image: {repository}:${{ github.sha }}"
+                  break
+          manifest.write_text("\n".join(lines) + "\n")
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add gitops/apps/sample-app/deployment.yaml
+          git commit -m "deploy sample-app ${{ github.sha }}" || exit 0
+          git push

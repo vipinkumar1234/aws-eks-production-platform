@@ -1,0 +1,24 @@
+serviceAccount:
+  create: true
+  name: fluent-bit
+  annotations:
+    eks.amazonaws.com/role-arn: REPLACE_WITH_FLUENT_BIT_ROLE_ARN
+securityContext:
+  runAsUser: 0
+  readOnlyRootFilesystem: true
+config:
+  filters: |
+    [FILTER]
+        Name kubernetes
+        Match kube.*
+        Merge_Log On
+outputs: |
+  [OUTPUT]
+      Name s3
+      Match kube.*
+      bucket REPLACE_WITH_LOGS_BUCKET_NAME
+      region REPLACE_WITH_AWS_REGION
+      total_file_size 10M
+      upload_timeout 10m
+      use_put_object On
+      s3_key_format /kubernetes/$TAG/%Y/%m/%d/%H/%M/%S-$UUID.gz

@@ -1,0 +1,80 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aws-load-balancer-controller
+  namespace: argocd
+spec:
+  project: platform
+  source:
+    repoURL: https://aws.github.io/eks-charts
+    chart: aws-load-balancer-controller
+    targetRevision: 1.13.0
+    helm:
+      values: |
+        clusterName: REPLACE_WITH_TERRAFORM_CLUSTER_NAME
+        region: REPLACE_WITH_AWS_REGION
+        vpcId: REPLACE_WITH_TERRAFORM_VPC_ID
+        serviceAccount:
+          create: true
+          annotations:
+            eks.amazonaws.com/role-arn: REPLACE_WITH_ALB_CONTROLLER_ROLE_ARN
+  destination: { server: https://kubernetes.default.svc, namespace: platform-system }
+  syncPolicy: { automated: { prune: true, selfHeal: true }, syncOptions: [CreateNamespace=true] }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: karpenter-resources
+  namespace: argocd
+spec:
+  project: platform
+  source:
+    repoURL: https://github.com/vipinkumar1234/aws-eks-production-platform.git
+    targetRevision: main
+    path: gitops/platform/karpenter
+  destination: { server: https://kubernetes.default.svc, namespace: karpenter }
+  syncPolicy: { automated: { prune: true, selfHeal: true }, syncOptions: [CreateNamespace=true] }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: karpenter
+  namespace: argocd
+spec:
+  project: platform
+  source:
+    repoURL: https://charts.karpenter.sh
+    chart: karpenter
+    targetRevision: 1.6.0
+  destination: { server: https://kubernetes.default.svc, namespace: karpenter }
+  syncPolicy: { automated: { prune: true, selfHeal: true }, syncOptions: [CreateNamespace=true] }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+spec:
+  project: platform
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.17.1
+    helm: { values: "crds:\n  enabled: true\nsecurityContext:\n  runAsNonRoot: true" }
+  destination: { server: https://kubernetes.default.svc, namespace: cert-manager }
+  syncPolicy: { automated: { prune: true, selfHeal: true }, syncOptions: [CreateNamespace=true] }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: metrics-server
+  namespace: argocd
+spec:
+  project: platform
+  source:
+    repoURL: https://kubernetes-sigs.github.io/metrics-server/
+    chart: metrics-server
+    targetRevision: 3.13.0
+    helm: { values: "args:\n  - --kubelet-preferred-address-types=InternalIP,Hostname\n  - --kubelet-use-node-status-port" }
+  destination: { server: https://kubernetes.default.svc, namespace: kube-system }
+  syncPolicy: { automated: { prune: true, selfHeal: true } }
