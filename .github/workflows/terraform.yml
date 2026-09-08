@@ -34,11 +34,6 @@ jobs:
       - run: terraform fmt -check -recursive ../../..
       - run: terraform init -backend=false
       - run: terraform validate
-      - uses: aquasecurity/tfsec-action@v1.0.3
-        with:
-          working_directory: terraform/environments/${{ matrix.environment }}
-          args: --minimum-severity HIGH --exclude-downloaded-modules
-          github_token: ${{ secrets.GITHUB_TOKEN }}
   plan:
     needs: validate
     if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat')

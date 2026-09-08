@@ -26,9 +26,6 @@ resource "aws_iam_role" "this" {
   tags               = var.tags
 }
 
-# AWS Load Balancer Controller requires wildcard resources for discovery and
-# dynamically created load balancer, target group, and security group resources.
-#tfsec:ignore:aws-iam-no-policy-wildcards
 resource "aws_iam_role_policy" "this" {
   role = aws_iam_role.this.id
   policy = jsonencode({

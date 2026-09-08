@@ -18,9 +18,6 @@ resource "aws_iam_role" "controller" {
   tags               = var.tags
 }
 
-# Karpenter provisions dynamic EC2 capacity and needs wildcard resources; the
-# role is restricted to the Karpenter service account and node role pass target.
-#tfsec:ignore:aws-iam-no-policy-wildcards
 resource "aws_iam_role_policy" "controller" {
   role = aws_iam_role.controller.id
   policy = jsonencode({

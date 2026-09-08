@@ -70,11 +70,6 @@ resource "aws_iam_role_policy" "flow_logs" {
         Action   = ["logs:CreateLogStream", "logs:DescribeLogStreams", "logs:PutLogEvents"]
         Resource = "${aws_cloudwatch_log_group.flow_logs.arn}:*"
       },
-      {
-        Effect   = "Allow"
-        Action   = ["logs:DescribeLogGroups"]
-        Resource = "*"
-      }
     ]
   })
 }

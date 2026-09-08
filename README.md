@@ -31,7 +31,7 @@ AWS resources are tagged with `InfraVersion`. CI populates it from the deployed 
 
 ## Prerequisites
 
-Install approved versions of Terraform >= 1.8, AWS CLI, kubectl, Helm, kubeconform, tfsec, Trivy, and Python 3.12. Authenticate locally with an AWS role that can bootstrap the account. Never use access keys in GitHub.
+Install approved versions of Terraform >= 1.8, AWS CLI, kubectl, Helm, kubeconform, Trivy, and Python 3.12. Authenticate locally with an AWS role that can bootstrap the account. Never use access keys in GitHub.
 
 Ansible creates or verifies the encrypted S3 state bucket before any environment Terraform backend initializes. Use `bash scripts/bootstrap.sh` for an environment, or `bash scripts/bootstrap-prerequisites.sh` for the initial state/OIDC bootstrap. Dev and prod use separate state buckets under `eks/dev` and `eks/prod` keys. Create a public Route 53 hosted zone named `worldofaws.app`; Terraform fetches its hosted-zone ID automatically.
 
@@ -70,7 +70,7 @@ Do not commit generated kubeconfigs, Terraform plans, state, credentials, or pla
 
 ## Promotion flow
 
-1. A pull request runs Terraform validation/tfsec, GitOps policy validation, application tests, and secret scanning.
+1. A pull request runs Terraform validation, GitOps policy validation, application tests, and secret scanning.
 2. A merge to `main` builds and scans an immutable image tagged with the commit SHA, pushes it to ECR, and updates the dev GitOps image reference.
 3. Argo CD synchronizes dev; promote the same image digest to prod through a reviewed GitOps change.
 4. Promote the same image digest to prod after approval. Keep prod GitHub environment approval enabled.

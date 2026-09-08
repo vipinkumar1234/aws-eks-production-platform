@@ -8,7 +8,6 @@ resource "aws_s3_bucket" "this" {
 
 # Access-log destinations cannot log to themselves; this bucket is the
 # dedicated destination for the application log bucket above.
-#tfsec:ignore:aws-s3-enable-bucket-logging
 resource "aws_s3_bucket" "access_logs" {
   bucket        = "${var.name}-access"
   force_destroy = false

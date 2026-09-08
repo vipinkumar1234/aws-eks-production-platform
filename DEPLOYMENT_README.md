@@ -34,7 +34,7 @@ Install and authenticate these tools:
 - Helm
 - Python 3.12
 - Docker or another OCI builder
-- kubeconform, tfsec, Trivy, and Git
+- kubeconform, Trivy, and Git
 
 The AWS identity used for the first apply must be allowed to create VPC, EKS, IAM, KMS, ECR, S3, and CloudWatch resources. Use an assumed role or federation; do not store AWS access keys in GitHub.
 
