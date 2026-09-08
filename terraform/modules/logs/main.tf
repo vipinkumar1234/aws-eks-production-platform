@@ -6,6 +6,9 @@ resource "aws_s3_bucket" "this" {
   tags          = var.tags
 }
 
+# Access-log destinations cannot log to themselves; this bucket is the
+# dedicated destination for the application log bucket above.
+#tfsec:ignore:aws-s3-enable-bucket-logging
 resource "aws_s3_bucket" "access_logs" {
   bucket        = "${var.name}-access"
   force_destroy = false
@@ -28,7 +31,11 @@ resource "aws_s3_bucket_versioning" "access_logs" {
 resource "aws_s3_bucket_server_side_encryption_configuration" "access_logs" {
   bucket = aws_s3_bucket.access_logs.id
   rule {
-    apply_server_side_encryption_by_default { sse_algorithm = "AES256" }
+    apply_server_side_encryption_by_default {
+      kms_master_key_id = var.kms_key_arn
+      sse_algorithm     = "aws:kms"
+    }
+    bucket_key_enabled = true
   }
 }
 

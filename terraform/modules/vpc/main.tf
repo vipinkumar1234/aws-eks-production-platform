@@ -59,11 +59,23 @@ resource "aws_iam_role_policy" "flow_logs" {
   role = aws_iam_role.flow_logs.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:DescribeLogGroups", "logs:DescribeLogStreams", "logs:PutLogEvents"]
-      Resource = "${aws_cloudwatch_log_group.flow_logs.arn}:*"
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup"]
+        Resource = aws_cloudwatch_log_group.flow_logs.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:DescribeLogStreams", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.flow_logs.arn}:*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["logs:DescribeLogGroups"]
+        Resource = "*"
+      }
+    ]
   })
 }
 
