@@ -33,7 +33,7 @@ AWS resources are tagged with `InfraVersion`. CI populates it from the deployed 
 
 Install approved versions of Terraform >= 1.8, AWS CLI, kubectl, Helm, kubeconform, tfsec, Trivy, and Python 3.12. Authenticate locally with an AWS role that can bootstrap the account. Never use access keys in GitHub.
 
-Create an encrypted S3 state bucket with versioning and a restrictive bucket policy in each account. The backend examples are commented in each environment's `versions.tf`; configure the bucket and key before the first apply.
+Ansible creates or verifies the encrypted S3 state bucket before any environment Terraform backend initializes. Use `bash scripts/bootstrap.sh` for an environment, or `bash scripts/bootstrap-prerequisites.sh` for the initial state/OIDC bootstrap. Dev and prod use separate state buckets under `eks/dev` and `eks/prod` keys. Create a public Route 53 hosted zone named `worldofaws.app`; Terraform fetches its hosted-zone ID automatically.
 
 ## Configure GitHub OIDC
 
@@ -44,6 +44,8 @@ Create an encrypted S3 state bucket with versioning and a restrictive bucket pol
 	- `AWS_APP_ROLE_ARN`: role allowed to push to the environment ECR repository.
 	- `ECR_REPOSITORY`: exact Terraform ECR repository name.
 4. Restrict GitHub environments so `prod` requires reviewers and only protected branches can deploy.
+
+For the configured repository, GitHub Actions assumes AWS through OIDC using `arn:aws:iam::001495086648:role/AutomationAdminAll`; configure that role's trust policy for `vipinkumar1234/aws-eks-production-platform` and the allowed `feat*` and `main` branch subjects. The workflow verifies the resulting AWS account ID before Terraform runs.
 
 Production Terraform uses a two-stage workflow: `plan-prod` creates an immutable plan artifact, then `apply-prod` targets the protected `prod` GitHub Environment. Configure `AWS_PROD_TERRAFORM_ROLE_ARN` as a repository or organization secret, and configure the `prod` Environment with the same secret plus required reviewers. The apply job cannot start until those reviewers approve it, and it applies the uploaded plan rather than creating a new unreviewed plan.
 

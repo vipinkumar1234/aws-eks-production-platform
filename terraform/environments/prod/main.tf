@@ -4,6 +4,10 @@ provider "aws" {
 }
 
 data "aws_caller_identity" "current" {}
+data "aws_route53_zone" "app" {
+  name         = var.route53_zone_name
+  private_zone = false
+}
 
 locals {
   name = "${var.project}-${var.region_short_name}-prod"
@@ -19,7 +23,7 @@ module "kms" {
 module "acm" {
   source          = "../../modules/acm"
   domain_name     = var.app_domain
-  route53_zone_id = var.route53_zone_id
+  route53_zone_id = data.aws_route53_zone.app.zone_id
   tags            = local.tags
 }
 module "auth" {

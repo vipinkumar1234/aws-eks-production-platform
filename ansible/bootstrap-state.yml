@@ -1,0 +1,102 @@
+---
+- name: Bootstrap encrypted Terraform state bucket before Terraform
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  collections:
+    - amazon.aws
+  vars:
+    expected_account_id: "001495086648"
+    environment: "{{ lookup('ansible.builtin.env', 'ENVIRONMENT') | default('dev', true) }}"
+    aws_region: "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default('ap-southeast-1', true) }}"
+    default_bucket_name: "worldofaws-app-terraform-state-{{ environment }}-001495086648"
+    state_bucket: "{{ lookup('ansible.builtin.env', 'TF_STATE_BUCKET') | default(default_bucket_name, true) }}"
+    state_key: "eks/{{ environment }}/terraform.tfstate"
+    policy_file: "{{ playbook_dir }}/.terraform-state-policy.json"
+  tasks:
+    - name: Verify the AWS account used for bootstrap
+      ansible.builtin.command:
+        argv:
+          - aws
+          - sts
+          - get-caller-identity
+          - --query
+          - Account
+          - --output
+          - text
+      register: caller_account
+      changed_when: false
+
+    - name: Stop if the wrong AWS account is active
+      ansible.builtin.assert:
+        that:
+          - caller_account.stdout | trim == expected_account_id
+        fail_msg: "Expected AWS account {{ expected_account_id }}, got {{ caller_account.stdout | trim }}"
+
+    - name: Check whether the state bucket already exists
+      ansible.builtin.command:
+        argv:
+          - aws
+          - s3api
+          - head-bucket
+          - --bucket
+          - "{{ state_bucket }}"
+      register: bucket_exists
+      changed_when: false
+      failed_when: false
+
+    - name: Create the state bucket in its configured region
+      ansible.builtin.shell: >-
+        aws s3api create-bucket
+        --bucket {{ state_bucket | quote }}
+        --region {{ aws_region | quote }}
+        {% if aws_region != 'us-east-1' %}--create-bucket-configuration LocationConstraint={{ aws_region | quote }}{% endif %}
+      when: bucket_exists.rc != 0
+
+    - name: Enable state bucket versioning
+      ansible.builtin.command:
+        argv: [aws, s3api, put-bucket-versioning, --bucket, "{{ state_bucket }}", --versioning-configuration, Status=Enabled, --region, "{{ aws_region }}"]
+
+    - name: Enable default AES256 encryption
+      ansible.builtin.command:
+        argv: [aws, s3api, put-bucket-encryption, --bucket, "{{ state_bucket }}", --server-side-encryption-configuration, '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}', --region, "{{ aws_region }}"]
+
+    - name: Block all public access
+      ansible.builtin.command:
+        argv: [aws, s3api, put-public-access-block, --bucket, "{{ state_bucket }}", --public-access-block-configuration, BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true, --region, "{{ aws_region }}"]
+
+    - name: Write deny-insecure-transport bucket policy
+      ansible.builtin.copy:
+        dest: "{{ policy_file }}"
+        mode: "0600"
+        content: |
+          {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Sid": "DenyInsecureTransport",
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:*",
+              "Resource": [
+                "arn:aws:s3:::{{ state_bucket }}",
+                "arn:aws:s3:::{{ state_bucket }}/*"
+              ],
+              "Condition": {"Bool": {"aws:SecureTransport": "false"}}
+            }]
+          }
+
+    - name: Apply state bucket policy
+      ansible.builtin.command:
+        argv: [aws, s3api, put-bucket-policy, --bucket, "{{ state_bucket }}", --policy, "file://{{ policy_file }}", --region, "{{ aws_region }}"]
+
+    - name: Remove temporary bucket policy
+      ansible.builtin.file:
+        path: "{{ policy_file }}"
+        state: absent
+
+    - name: Print backend values for Terraform
+      ansible.builtin.debug:
+        msg:
+          bucket: "{{ state_bucket }}"
+          key: "{{ state_key }}"
+          region: "{{ aws_region }}"

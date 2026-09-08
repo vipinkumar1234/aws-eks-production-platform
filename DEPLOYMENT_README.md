@@ -52,7 +52,14 @@ helm version
 
 ## 3. Prepare Terraform state
 
-Create one encrypted, versioned S3 state bucket per AWS account or approved shared state location. Enable public-access blocking and a restrictive bucket policy. The repository uses Terraform's S3 lock file support, so the Terraform execution role must be able to read and write the state bucket.
+Create the encrypted, versioned S3 state bucket and GitHub OIDC provider before initializing an environment backend. This repository now includes a local-bootstrap root for both prerequisites:
+
+```bash
+export AWS_REGION=ap-southeast-1
+bash scripts/bootstrap-prerequisites.sh
+```
+
+The example state bucket name is `worldofaws-app-terraform-state-001495086648`. S3 bucket names are globally unique, so change it if AWS reports that the name is already taken. The bucket is not created by the dev/prod backend itself because Terraform must have a backend before it can manage resources in that backend.
 
 Uncomment and customize the backend in both environment `versions.tf` files. Use a different state key for each environment:
 
@@ -81,11 +88,17 @@ Change these values:
 - `project`: lowercase project name.
 - `admin_role_arns`: complete IAM role ARNs allowed to administer EKS, for example `arn:aws:iam::<ACCOUNT_ID>:role/platform-admin`.
 - `github_oidc_subjects`: exact GitHub subject, for example `repo:ORG/REPO:ref:refs/heads/main`.
-- `app_domain`: DNS name for the application (`dev.game.example.com` or `game.example.com`).
-- `route53_zone_id`: ID of the existing public Route 53 hosted zone containing `app_domain`.
+- `app_domain`: `dev.worldofaws.app` for dev or `worldofaws.app` for prod.
+- `route53_zone_name`: `worldofaws.app`; Terraform fetches its public hosted-zone ID automatically.
 - `infra_version`: optional local deployment identifier; CI sets this automatically to the Git branch name.
 - `SecurityContact` in the environment `main.tf`: a real support address.
 - `region_short_name` only when adding a region; keep `apse1` and `use1` stable.
+
+For this repository, the dev feature-branch subject is:
+
+```text
+repo:vipinkumar1234/aws-eks-production-platform:ref:refs/heads/feat_test
+```
 
 The root modules create the KMS key, ECR repository, S3 log bucket, encrypted DynamoDB ArenaGrid table, Cognito authentication, WAF, VPC endpoints, SSM node permissions, ALB controller role, game IRSA role, and Fluent Bit role. Review all IAM and public ALB changes in the plan.
 
@@ -114,13 +127,29 @@ aws eks update-kubeconfig --region ap-southeast-1 \
   --name "$(terraform -chdir=terraform/environments/dev output -raw cluster_name)"
 ```
 
-The convenience script performs the same flow:
+The convenience script performs the same flow. It runs Ansible first, so the state bucket exists before Terraform initializes its backend:
 
 ```bash
 $env:ENVIRONMENT = "dev" # PowerShell
 $env:TF_STATE_BUCKET_DEV = "your-dev-state-bucket"
 bash scripts/bootstrap.sh # Bash, WSL, or Linux
 ```
+
+Install Ansible before using the script:
+
+```bash
+python -m pip install ansible-core
+ansible-galaxy collection install -r ansible/requirements.yml
+```
+
+The Ansible playbook creates or verifies these region-specific buckets:
+
+```text
+worldofaws-app-terraform-state-dev-001495086648
+worldofaws-app-terraform-state-prod-001495086648
+```
+
+You may override them with `TF_STATE_BUCKET_DEV`, `TF_STATE_BUCKET_PROD`, or the single-run `TF_STATE_BUCKET` variable. The AWS identity running Ansible needs `s3:CreateBucket`, `s3:PutBucketVersioning`, `s3:PutBucketEncryption`, `s3:PutPublicAccessBlock`, `s3:PutBucketPolicy`, and `s3:HeadBucket` permissions.
 
 Record these outputs:
 
@@ -146,11 +175,11 @@ Replace these placeholders before Argo CD reconciliation:
 | `REPLACE_WITH_GAME_TABLE_NAME` | Terraform `game_table_name` output |
 | `REPLACE_WITH_GAME_ROLE_ARN` | Terraform `game_role_arn` output |
 | Cognito auth annotation values | Terraform Cognito outputs |
-| `REPLACE_WITH_APP_DOMAIN` | Terraform `app_domain` output |
+| `REPLACE_WITH_APP_DOMAIN` | `dev.worldofaws.app` or Terraform `app_domain` output |
 | `REPLACE_WITH_AWS_REGION` | `ap-southeast-1` or `us-east-1` |
 | `REPLACE_WITH_ECR_URL` | Terraform `ecr_repository_url` output |
 | `ORG/REPO` | GitHub organization and repository in Argo and Terraform files |
-| `game.example.com` | DNS name owned by your organization |
+| `worldofaws.app` | Existing public Route 53 zone and owned DNS domain |
 
 Use complete IAM role ARNs for IRSA annotations. A role name such as `eks-platform-apse1-dev-alb-controller` is not a valid replacement for the ARN.
 
@@ -288,6 +317,48 @@ Configure GitHub before using this flow:
 - Restrict deployments to `main`.
 - Add `AWS_PROD_TERRAFORM_ROLE_ARN` as a repository or organization secret and as a `prod` environment secret.
 - Ensure the production role can access the production state backend and account.
+
+## GitHub OIDC AWS trust policy
+
+Configure the AWS role `arn:aws:iam::001495086648:role/AutomationAdminAll` to trust the GitHub OIDC provider. The trust policy must include the exact repository and allowed branches:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::001495086648:oidc-provider/token.actions.githubusercontent.com"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+      },
+      "StringLike": {
+        "token.actions.githubusercontent.com:sub": [
+          "repo:vipinkumar1234/aws-eks-production-platform:ref:refs/heads/feat*",
+          "repo:vipinkumar1234/aws-eks-production-platform:ref:refs/heads/main"
+        ]
+      }
+    }
+  }]
+}
+```
+
+This AWS trust-policy change is performed once by an account administrator. GitHub Actions then obtains temporary credentials through OIDC; no local AWS CLI credentials are available or required on the runner.
+
+## Required GitHub dev settings
+
+Create a GitHub Environment named exactly `dev` and add these environment secrets:
+
+| Secret | Value |
+| --- | --- |
+| `AWS_TERRAFORM_ROLE_ARN` | `arn:aws:iam::001495086648:role/AutomationAdminAll` |
+| `TF_STATE_BUCKET_DEV` | Existing encrypted S3 state bucket name |
+| `AWS_APP_ROLE_ARN` | Role allowed to push to the dev ECR repository |
+
+Add the ECR repository name as an environment variable named `ECR_REPOSITORY`. Configure required reviewers if dev deployment approval is required.
 
 Never bypass the environment approval by running an unreviewed local production apply. If emergency access is required, record the incident and review the resulting Terraform state afterward.
 

@@ -52,6 +52,17 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
           aws-region: ap-southeast-1
+      - name: Verify assumed AWS account
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "001495086648"
+      - name: Bootstrap dev Terraform state with Ansible
+        env:
+          ENVIRONMENT: dev
+          AWS_REGION: ap-southeast-1
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET_DEV }}
+        run: |
+          python -m pip install --disable-pip-version-check ansible-core
+          ansible-galaxy collection install -r ansible/requirements.yml
+          ansible-playbook ansible/bootstrap-state.yml
       - run: terraform -chdir=terraform/environments/dev init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET_DEV }}" -backend-config="key=eks/dev/terraform.tfstate" -backend-config="region=ap-southeast-1" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
       - run: terraform -chdir=terraform/environments/dev plan -no-color
 
@@ -69,6 +80,17 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
           aws-region: ap-southeast-1
+      - name: Verify assumed AWS account
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "001495086648"
+      - name: Bootstrap dev Terraform state with Ansible
+        env:
+          ENVIRONMENT: dev
+          AWS_REGION: ap-southeast-1
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET_DEV }}
+        run: |
+          python -m pip install --disable-pip-version-check ansible-core
+          ansible-galaxy collection install -r ansible/requirements.yml
+          ansible-playbook ansible/bootstrap-state.yml
       - run: terraform -chdir=terraform/environments/dev init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET_DEV }}" -backend-config="key=eks/dev/terraform.tfstate" -backend-config="region=ap-southeast-1" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
       - run: terraform -chdir=terraform/environments/dev plan -out=dev.tfplan
       - run: terraform -chdir=terraform/environments/dev apply -auto-approve dev.tfplan
@@ -86,6 +108,17 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_PROD_TERRAFORM_ROLE_ARN }}
           aws-region: us-east-1
+      - name: Verify assumed AWS account
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "001495086648"
+      - name: Bootstrap prod Terraform state with Ansible
+        env:
+          ENVIRONMENT: prod
+          AWS_REGION: us-east-1
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET_PROD }}
+        run: |
+          python -m pip install --disable-pip-version-check ansible-core
+          ansible-galaxy collection install -r ansible/requirements.yml
+          ansible-playbook ansible/bootstrap-state.yml
       - run: terraform -chdir=terraform/environments/prod init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET_PROD }}" -backend-config="key=eks/prod/terraform.tfstate" -backend-config="region=us-east-1" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
       - run: terraform -chdir=terraform/environments/prod plan -no-color -out=prod.tfplan | tee terraform/environments/prod/prod-plan.txt
       - uses: actions/upload-artifact@v4
@@ -115,6 +148,8 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_PROD_TERRAFORM_ROLE_ARN }}
           aws-region: us-east-1
+      - name: Verify assumed AWS account
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "001495086648"
       - run: terraform -chdir=terraform/environments/prod init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET_PROD }}" -backend-config="key=eks/prod/terraform.tfstate" -backend-config="region=us-east-1" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
       - run: terraform -chdir=terraform/environments/prod apply -auto-approve prod.tfplan
 
@@ -135,6 +170,8 @@ jobs:
         with:
           role-to-assume: ${{ inputs.environment == 'prod' && secrets.AWS_PROD_TERRAFORM_ROLE_ARN || secrets.AWS_TERRAFORM_ROLE_ARN }}
           aws-region: ${{ inputs.environment == 'prod' && 'us-east-1' || 'ap-southeast-1' }}
+      - name: Verify assumed AWS account
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "001495086648"
       - run: terraform -chdir=terraform/environments/${{ inputs.environment }} init -backend-config="bucket=${{ inputs.environment == 'prod' && secrets.TF_STATE_BUCKET_PROD || secrets.TF_STATE_BUCKET_DEV }}" -backend-config="key=eks/${{ inputs.environment }}/terraform.tfstate" -backend-config="region=${{ inputs.environment == 'prod' && 'us-east-1' || 'ap-southeast-1' }}" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
       - run: terraform -chdir=terraform/environments/${{ inputs.environment }} plan -destroy -no-color -out=destroy.tfplan | tee terraform/environments/${{ inputs.environment }}/destroy-plan.txt
       - run: terraform -chdir=terraform/environments/${{ inputs.environment }} apply -auto-approve destroy.tfplan

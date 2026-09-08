@@ -20,11 +20,11 @@ variable "project" {
 }
 variable "app_domain" {
   type    = string
-  default = "dev.game.example.com"
+  default = "dev.worldofaws.app"
 }
-variable "route53_zone_id" {
-  type        = string
-  description = "Public Route 53 hosted zone ID that contains app_domain"
+variable "route53_zone_name" {
+  type    = string
+  default = "worldofaws.app"
 }
 variable "infra_version" {
   type        = string

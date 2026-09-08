@@ -23,6 +23,7 @@ This reference explains every major component and production term used in the Ar
 | **S3 state locking** | Terraform's native `use_lockfile=true` mechanism prevents concurrent state writes. |
 | **State key** | Separate object path such as `eks/dev/terraform.tfstate` or `eks/prod/terraform.tfstate`. |
 | **State bucket** | Pre-existing S3 bucket required before Terraform backend initialization. |
+| **Ansible state bootstrap** | Idempotently creates and hardens the state bucket before Terraform runs. |
 | **Plan** | Terraform's reviewed change preview before infrastructure is modified. |
 | **Apply** | Terraform operation that creates or changes resources according to a plan. |
 | **Destroy plan** | Explicit Terraform plan describing resource deletion after testing. |
