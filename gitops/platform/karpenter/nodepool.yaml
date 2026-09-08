@@ -14,6 +14,10 @@ spec:
       labels:
         workload: application
     spec:
+      metadataOptions:
+        httpEndpoint: enabled
+        httpTokens: required
+        httpPutResponseHopLimit: 1
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass

@@ -30,6 +30,52 @@ module "vpc" {
   tags = var.tags
 }
 
+data "aws_caller_identity" "current" {}
+
+resource "aws_cloudwatch_log_group" "flow_logs" {
+  name              = "/aws/vpc/flow-logs/${var.name}"
+  retention_in_days = 90
+  kms_key_id        = var.flow_log_kms_key_arn
+  tags              = var.tags
+}
+
+data "aws_iam_policy_document" "flow_logs_assume_role" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["vpc-flow-logs.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "flow_logs" {
+  name               = "${var.name}-flow-logs"
+  assume_role_policy = data.aws_iam_policy_document.flow_logs_assume_role.json
+  tags               = var.tags
+}
+
+resource "aws_iam_role_policy" "flow_logs" {
+  role = aws_iam_role.flow_logs.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:DescribeLogGroups", "logs:DescribeLogStreams", "logs:PutLogEvents"]
+      Resource = "${aws_cloudwatch_log_group.flow_logs.arn}:*"
+    }]
+  })
+}
+
+resource "aws_flow_log" "this" {
+  vpc_id               = module.vpc.vpc_id
+  traffic_type         = "ALL"
+  iam_role_arn         = aws_iam_role.flow_logs.arn
+  log_destination_type = "cloud-watch-logs"
+  log_destination      = aws_cloudwatch_log_group.flow_logs.arn
+  tags                 = merge(var.tags, { Name = "${var.name}-flow-logs" })
+}
+
 resource "aws_security_group" "vpce" {
   name_prefix = "${var.name}-vpce-"
   description = "Allow private workloads to reach AWS interface endpoints"
@@ -42,10 +88,11 @@ resource "aws_security_group" "vpce" {
     cidr_blocks = [var.vpc_cidr]
   }
   egress {
+    description = "Allow endpoint response traffic within the VPC"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.vpc_cidr]
   }
   tags = var.tags
 }

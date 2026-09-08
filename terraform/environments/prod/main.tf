@@ -47,12 +47,13 @@ module "game_data" {
 }
 
 module "vpc" {
-  source   = "../../modules/vpc"
-  name     = "${local.name}-vpc"
-  region   = var.aws_region
-  vpc_cidr = "10.20.0.0/16"
-  azs      = ["us-east-1a", "us-east-1b", "us-east-1c"]
-  tags     = local.tags
+  source               = "../../modules/vpc"
+  name                 = "${local.name}-vpc"
+  region               = var.aws_region
+  vpc_cidr             = "10.20.0.0/16"
+  azs                  = ["us-east-1a", "us-east-1b", "us-east-1c"]
+  flow_log_kms_key_arn = module.kms.key_arn
+  tags                 = local.tags
 }
 module "eks" {
   source                       = "../../modules/eks"
@@ -61,6 +62,7 @@ module "eks" {
   private_subnets              = module.vpc.private_subnets
   public_subnets               = module.vpc.public_subnets
   kms_key_arn                  = module.kms.key_arn
+  ecr_repository_arn           = module.ecr.repository_arn
   endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
   admin_role_arns              = var.admin_role_arns
   github_oidc_subjects         = var.github_oidc_subjects

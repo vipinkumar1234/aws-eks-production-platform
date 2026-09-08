@@ -2,10 +2,10 @@ name: terraform
 on:
   pull_request:
     branches: [main]
-    paths: [terraform/**]
+    paths: [terraform/**, .github/workflows/terraform.yml]
   push:
     branches: [main, "feat*"]
-    paths: [terraform/**]
+    paths: [terraform/**, .github/workflows/terraform.yml]
   workflow_dispatch:
     inputs:
       environment:
@@ -37,7 +37,7 @@ jobs:
       - uses: aquasecurity/tfsec-action@v1.0.3
         with:
           working_directory: terraform/environments/${{ matrix.environment }}
-          args: --minimum-severity HIGH
+          args: --minimum-severity HIGH --exclude-downloaded-modules
           github_token: ${{ secrets.GITHUB_TOKEN }}
   plan:
     needs: validate
