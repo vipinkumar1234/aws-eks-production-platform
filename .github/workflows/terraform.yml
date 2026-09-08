@@ -29,7 +29,7 @@ jobs:
       run:
         working-directory: terraform/environments/${{ matrix.environment }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: hashicorp/setup-terraform@v3
       - run: terraform fmt -check -recursive ../../..
       - run: terraform init -backend=false
@@ -37,7 +37,8 @@ jobs:
       - uses: aquasecurity/tfsec-action@v1.0.3
         with:
           working_directory: terraform/environments/${{ matrix.environment }}
-          minimum_severity: HIGH
+          args: --minimum-severity HIGH
+          github_token: ${{ secrets.GITHUB_TOKEN }}
   plan:
     needs: validate
     if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'feat')
@@ -46,7 +47,7 @@ jobs:
     env:
       TF_VAR_infra_version: ${{ github.head_ref || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: hashicorp/setup-terraform@v3
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -74,7 +75,7 @@ jobs:
     env:
       TF_VAR_infra_version: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: hashicorp/setup-terraform@v3
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -102,7 +103,7 @@ jobs:
     env:
       TF_VAR_infra_version: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: hashicorp/setup-terraform@v3
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -138,7 +139,7 @@ jobs:
     env:
       TF_VAR_infra_version: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: hashicorp/setup-terraform@v3
       - uses: actions/download-artifact@v4
         with:
@@ -164,7 +165,7 @@ jobs:
     env:
       TF_VAR_infra_version: destroy-${{ inputs.environment }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: hashicorp/setup-terraform@v3
       - uses: aws-actions/configure-aws-credentials@v4
         with:
