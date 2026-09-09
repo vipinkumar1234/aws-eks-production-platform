@@ -1,6 +1,10 @@
 # Copy to terraform.tfvars only for local use; never commit secrets.
 project = "eks-platform"
 admin_role_arns = ["arn:aws:iam::000000000000:role/platform-admin"]
-github_oidc_subjects = ["repo:ORG/REPO:ref:refs/heads/main"]
-app_domain = "game.example.com"
+github_oidc_subjects = ["repo:ORG/REPO:environment:prod"]
+app_domain = "play.arenagrid.example.com"
 route53_zone_id = "Z00000000000000000000"
+owner = "platform-team"
+cost_center = "engineering"
+# Discover and test the regional AL2023 x86_64 EKS 1.34 AMI before pinning.
+karpenter_ami_id = "ami-REPLACE_WITH_TESTED_REGIONAL_ID"

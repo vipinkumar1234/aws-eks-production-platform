@@ -8,8 +8,8 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: sample-app
-  minReplicas: 3
-  maxReplicas: 20
+  minReplicas: 2
+  maxReplicas: 4
   behavior:
     scaleUp: { stabilizationWindowSeconds: 30 }
     scaleDown: { stabilizationWindowSeconds: 300 }
@@ -29,6 +29,6 @@ metadata:
   name: sample-app
   namespace: sample-app
 spec:
-  minAvailable: 2
+  minAvailable: 1
   selector:
     matchLabels: { app: sample-app }

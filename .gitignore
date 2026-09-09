@@ -6,11 +6,18 @@
 *.tfvars
 *.tfvars.json
 crash.log
+tfplan
+*-plan.txt
+.review-deps/
 
 # Runtime
 __pycache__/
 .pytest_cache/
 .env
+.venv/
+.test-tools/
+.local-demo/
+test-results/
 .DS_Store
 
 # Build output

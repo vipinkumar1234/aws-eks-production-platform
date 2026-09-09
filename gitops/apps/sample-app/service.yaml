@@ -19,12 +19,22 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-same-namespace
+  name: allow-app-traffic
   namespace: sample-app
 spec:
   podSelector: { matchLabels: { app: sample-app } }
-  policyTypes: [Ingress]
+  policyTypes: [Ingress, Egress]
   ingress:
-    - from: [{ podSelector: { matchLabels: { app: sample-app } } }]
-    - from: [{ namespaceSelector: {} }]
+    # ALB traffic arrives from VPC addresses; node security groups restrict ALB access.
+    - from: [{ ipBlock: { cidr: REPLACE_WITH_VPC_CIDR } }]
       ports: [{ protocol: TCP, port: 8080 }]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    # DynamoDB gateway endpoint uses public service IPs; HTTPS is required for AWS SDKs.
+    - to: [{ ipBlock: { cidr: 0.0.0.0/0, except: [169.254.0.0/16] } }]
+      ports: [{ protocol: TCP, port: 443 }]

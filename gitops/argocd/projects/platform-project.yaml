@@ -7,10 +7,7 @@ spec:
   sourceRepos:
     - "https://github.com/vipinkumar1234/aws-eks-production-platform.git"
     - "https://aws.github.io/eks-charts"
-    - "https://charts.karpenter.sh"
-    - "https://charts.jetstack.io"
     - "https://kubernetes-sigs.github.io/metrics-server/"
-    - "https://prometheus-community.github.io/helm-charts"
     - "https://fluent.github.io/helm-charts"
   destinations:
     - namespace: "*"

@@ -23,17 +23,12 @@ data "aws_iam_policy_document" "assume_role" {
 resource "aws_iam_role" "this" {
   name               = "${var.name}-alb-controller"
   assume_role_policy = data.aws_iam_policy_document.assume_role.json
-  tags               = var.tags
+  tags               = merge(var.tags, { Name = "${var.name}-alb-controller" })
 }
 
+# Upstream v2.13.0 policy matches chart 1.13.0; review together when upgrading.
 resource "aws_iam_role_policy" "this" {
-  role = aws_iam_role.this.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      { Effect = "Allow", Action = ["iam:CreateServiceLinkedRole"], Resource = "*", Condition = { StringEquals = { "iam:AWSServiceName" = "elasticloadbalancing.amazonaws.com" } } },
-      { Effect = "Allow", Action = ["ec2:Describe*", "elasticloadbalancing:Describe*"], Resource = "*" },
-      { Effect = "Allow", Action = ["ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress", "ec2:CreateSecurityGroup", "ec2:CreateTags", "ec2:DeleteTags", "ec2:DeleteSecurityGroup", "elasticloadbalancing:CreateLoadBalancer", "elasticloadbalancing:CreateTargetGroup", "elasticloadbalancing:CreateListener", "elasticloadbalancing:CreateRule", "elasticloadbalancing:DeleteLoadBalancer", "elasticloadbalancing:DeleteTargetGroup", "elasticloadbalancing:DeleteListener", "elasticloadbalancing:DeleteRule", "elasticloadbalancing:ModifyLoadBalancerAttributes", "elasticloadbalancing:ModifyTargetGroup", "elasticloadbalancing:ModifyTargetGroupAttributes", "elasticloadbalancing:ModifyListener", "elasticloadbalancing:AddTags", "elasticloadbalancing:RemoveTags", "elasticloadbalancing:RegisterTargets", "elasticloadbalancing:DeregisterTargets", "elasticloadbalancing:SetIpAddressType", "elasticloadbalancing:SetSecurityGroups", "elasticloadbalancing:SetSubnets", "elasticloadbalancing:SetWebAcl", "elasticloadbalancing:AddListenerCertificates", "elasticloadbalancing:RemoveListenerCertificates", "elasticloadbalancing:ModifyListenerAttributes", "wafv2:GetWebACL", "wafv2:AssociateWebACL", "wafv2:DisassociateWebACL", "shield:DescribeProtection", "shield:GetSubscriptionState", "cognito-idp:DescribeUserPoolClient"], Resource = "*" }
-    ]
-  })
+  name   = "${var.name}-this"
+  role   = aws_iam_role.this.id
+  policy = file("${path.module}/iam_policy.json")
 }

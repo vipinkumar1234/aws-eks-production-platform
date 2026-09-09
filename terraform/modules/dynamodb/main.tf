@@ -13,7 +13,12 @@ resource "aws_dynamodb_table" "this" {
     kms_key_arn = var.kms_key_arn
   }
 
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+
   point_in_time_recovery { enabled = true }
   deletion_protection_enabled = true
-  tags                        = var.tags
+  tags                        = merge(var.tags, { Name = var.name })
 }

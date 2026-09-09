@@ -14,4 +14,21 @@ output "game_role_arn" { value = module.iam.game_role_arn }
 output "cognito_user_pool_arn" { value = module.auth.user_pool_arn }
 output "cognito_user_pool_client_id" { value = module.auth.user_pool_client_id }
 output "cognito_user_pool_domain" { value = module.auth.user_pool_domain }
-output "karpenter_node_role_name" { value = module.karpenter.node_role_name }
+
+output "aws_region" { value = var.aws_region }
+output "vpc_cidr" { value = "10.10.0.0/16" }
+
+output "session_secret_arn" { value = module.iam.session_secret_arn }
+output "cognito_issuer" { value = module.auth.issuer }
+
+output "resource_prefix" { value = local.name }
+output "owner" { value = var.owner }
+output "cost_center" { value = var.cost_center }
+output "project" { value = var.project }
+output "cluster_endpoint" { value = module.eks.cluster_endpoint }
+output "node_security_group_id" { value = module.eks.node_security_group_id }
+output "karpenter_instance_profile" { value = module.karpenter.instance_profile_name }
+output "karpenter_queue_name" { value = module.karpenter.queue_name }
+output "karpenter_controller_role_arn" { value = module.karpenter.controller_role_arn }
+output "karpenter_ami_id" { value = data.aws_ami.karpenter.id }
+output "karpenter_cpu_limit" { value = var.karpenter_cpu_limit }

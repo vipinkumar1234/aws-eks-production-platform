@@ -1,7 +1,7 @@
 resource "aws_s3_bucket" "this" {
   bucket        = var.name
   force_destroy = false
-  tags          = var.tags
+  tags          = merge(var.tags, { Name = var.name })
 }
 
 resource "aws_s3_bucket_public_access_block" "this" {
@@ -36,4 +36,13 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
     noncurrent_version_expiration { noncurrent_days = 90 }
     expiration { days = 365 }
   }
+}
+
+resource "aws_s3_bucket_policy" "tls" {
+  bucket = aws_s3_bucket.this.id
+  policy = jsonencode({ Version = "2012-10-17", Statement = [{
+    Sid       = "DenyInsecureTransport", Effect = "Deny", Principal = "*", Action = "s3:*",
+    Resource  = [aws_s3_bucket.this.arn, "${aws_s3_bucket.this.arn}/*"],
+    Condition = { Bool = { "aws:SecureTransport" = "false" } }
+  }] })
 }

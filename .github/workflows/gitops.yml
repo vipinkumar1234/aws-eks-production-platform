@@ -1,7 +1,7 @@
 name: gitops
 on:
   pull_request:
-    paths: [gitops/**]
+    paths: [gitops/**, scripts/**, .github/workflows/gitops.yml]
 permissions:
   contents: read
 jobs:
@@ -9,12 +9,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/setup-kubectl@v4
-        with: { version: latest }
-      - uses: instrumenta/kubeval-action@master
-        with:
-          files: gitops
-          strict: true
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install PyYAML==6.0.2 boto3==1.43.89 jsonschema==4.26.0
+      - run: python scripts/validate_yaml.py
+      - run: python scripts/validate_karpenter.py
+      - run: python -m unittest discover -s scripts -p 'test_*.py' -v
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24.0' }
+      - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.6.7
+      - name: Validate Kubernetes built-in schemas
+        run: |
+          find gitops -name '*.yaml' ! -name values.yaml -print0 | xargs -0 kubeconform -strict -summary -skip Application,AppProject,NodePool,EC2NodeClass
       - uses: bridgecrewio/checkov-action@v12
         with:
           directory: gitops

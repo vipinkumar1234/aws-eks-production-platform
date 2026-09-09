@@ -4,6 +4,9 @@ metadata:
   name: sample-app
   namespace: sample-app
   annotations:
+    alb.ingress.kubernetes.io/load-balancer-name: REPLACE_WITH_RESOURCE_PREFIX-app
+    alb.ingress.kubernetes.io/tags: "Project=REPLACE_WITH_PROJECT,Environment=REPLACE_WITH_ENVIRONMENT,Owner=REPLACE_WITH_OWNER,CostCenter=REPLACE_WITH_COST_CENTER,ManagedBy=aws-load-balancer-controller"
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/healthcheck-path: /healthz
@@ -11,10 +14,6 @@ metadata:
     alb.ingress.kubernetes.io/ssl-redirect: "443"
     alb.ingress.kubernetes.io/certificate-arn: REPLACE_WITH_ACM_CERTIFICATE_ARN
     alb.ingress.kubernetes.io/wafv2-acl-arn: REPLACE_WITH_WAF_WEB_ACL_ARN
-    alb.ingress.kubernetes.io/auth-type: cognito
-    alb.ingress.kubernetes.io/auth-scope: "openid email"
-    alb.ingress.kubernetes.io/auth-on-unauthenticated-request: authenticate
-    alb.ingress.kubernetes.io/auth-idp-cognito: '{"UserPoolArn":"REPLACE_WITH_COGNITO_USER_POOL_ARN","UserPoolClientId":"REPLACE_WITH_COGNITO_CLIENT_ID","UserPoolDomain":"REPLACE_WITH_COGNITO_USER_POOL_DOMAIN"}'
 spec:
   ingressClassName: alb
   rules:

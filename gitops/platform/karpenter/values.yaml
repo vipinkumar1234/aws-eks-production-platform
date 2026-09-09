@@ -1,0 +1,22 @@
+# Bootstrap-managed Helm release; do not deploy this directory as raw manifests.
+fullnameOverride: karpenter
+replicas: 2
+serviceAccount:
+  name: karpenter
+nodeSelector:
+  kubernetes.io/os: linux
+  workload-tier: system
+controller:
+  resources:
+    requests: { cpu: 500m, memory: 512Mi }
+    limits: { memory: 1Gi }
+  env:
+    - name: AWS_REGION
+      value: REPLACE_WITH_AWS_REGION
+settings:
+  clusterName: REPLACE_WITH_CLUSTER_NAME
+  clusterEndpoint: REPLACE_WITH_CLUSTER_ENDPOINT
+  interruptionQueue: REPLACE_WITH_KARPENTER_QUEUE_NAME
+  eksControlPlane: true
+  batchMaxDuration: 10s
+  batchIdleDuration: 1s

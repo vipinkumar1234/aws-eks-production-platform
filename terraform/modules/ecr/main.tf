@@ -6,7 +6,7 @@ resource "aws_ecr_repository" "this" {
     encryption_type = "KMS"
     kms_key         = var.kms_key_arn
   }
-  tags = var.tags
+  tags = merge(var.tags, { Name = var.name })
 }
 
 resource "aws_ecr_lifecycle_policy" "this" {

@@ -1,3 +1,3 @@
-output "node_role_arn" { value = aws_iam_role.node.arn }
-output "node_role_name" { value = aws_iam_role.node.name }
-output "controller_role_arn" { value = aws_iam_role.controller.arn }
+output "instance_profile_name" { value = module.karpenter.instance_profile_name }
+output "queue_name" { value = module.karpenter.queue_name }
+output "controller_role_arn" { value = module.karpenter.iam_role_arn }

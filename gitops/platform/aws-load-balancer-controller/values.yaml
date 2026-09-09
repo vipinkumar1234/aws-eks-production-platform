@@ -3,5 +3,10 @@ region: REPLACE_WITH_AWS_REGION
 vpcId: REPLACE_WITH_TERRAFORM_VPC_ID
 serviceAccount:
   create: true
+  name: aws-load-balancer-controller
   annotations:
     eks.amazonaws.com/role-arn: REPLACE_WITH_ALB_CONTROLLER_ROLE_ARN
+
+replicaCount: 2
+nodeSelector:
+  workload-tier: system

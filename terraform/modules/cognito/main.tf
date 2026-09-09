@@ -16,7 +16,7 @@ resource "aws_cognito_user_pool" "this" {
       priority = 1
     }
   }
-  tags = var.tags
+  tags = merge(var.tags, { Name = var.name })
 }
 
 resource "aws_cognito_user_pool_domain" "this" {
@@ -25,13 +25,15 @@ resource "aws_cognito_user_pool_domain" "this" {
 }
 
 resource "aws_cognito_user_pool_client" "this" {
-  name                                 = "${var.name}-alb"
+  name                                 = "${var.name}-game"
   user_pool_id                         = aws_cognito_user_pool.this.id
-  generate_secret                      = true
+  generate_secret                      = false
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_flows                  = ["code"]
   allowed_oauth_scopes                 = ["openid", "email"]
   callback_urls                        = [var.callback_url]
   logout_urls                          = [var.logout_url]
+  prevent_user_existence_errors        = "ENABLED"
+  enable_token_revocation              = true
   supported_identity_providers         = ["COGNITO"]
 }

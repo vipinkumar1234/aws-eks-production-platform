@@ -1,332 +1,133 @@
-# EKS Platform Deployment Guide
+# Deploy the application on EKS with Karpenter
 
-This document is the complete deployment checklist for this repository. It deploys an Amazon EKS platform with private worker nodes, KMS encryption, VPC endpoints, Karpenter, AWS Load Balancer Controller, observability, S3 log storage, and ArenaGrid, a multiplayer tic-tac-toe arena API.
+Run commands from the repository root using Bash/WSL unless noted. Python scripts also work directly in PowerShell. Install Python 3.12, Terraform 1.14.0, AWS CLI v2, kubectl compatible with EKS 1.34, Helm and Docker. Install Python dependencies with `python -m pip install -r application/sample-app/requirements.txt`. Authenticate to your chosen AWS account (for example `aws sso login --profile YOUR_PROFILE`, then export `AWS_PROFILE`).
 
-## Who can use this guide?
+## 1. Supply account-specific inputs
 
-Someone with limited EKS experience can follow this guide in a sandbox or development AWS account if an AWS administrator first provides the required account access and state bucket. It is intentionally guided, not a zero-click installer. You still need to understand who owns the AWS account, which IAM role is safe to assume, what will be publicly reachable, and how to approve or roll back production changes.
+Copy `terraform/environments/dev/terraform.tfvars.example` to `terraform.tfvars` in the same directory. Replace the administrator IAM role, real domain, public Route 53 zone, GitHub OIDC subject, `owner`, `cost_center`, and `karpenter_ami_id`. See the production checklist below before applying. The domain must belong to that zone. Dev is ap-southeast-1; prod is us-east-1. Use separate bucket names and state roots. If deploying both in one account, set the second environment's `github_oidc_provider_arn` to the existing account-level provider ARN.
 
-This repository does not create the initial AWS administrator role, Terraform state bucket, GitHub repository, GitHub OIDC trust outside the Terraform stack, public Route 53 hosted zone, or GitHub Environment reviewers. It creates the ACM public certificate and DNS validation records after you provide an existing public Route 53 hosted zone ID. Ask an AWS/GitHub administrator to prepare those items before starting. Never experiment first in a production account.
+The EKS endpoint is private by default. Run kubectl/Helm from a host connected to the VPC, or explicitly set `cluster_endpoint_public_access_cidrs` to your administrator's public `/32`. Do not use `0.0.0.0/0`. AWS account IDs, domain ownership and credentials are intentionally not guessed.
 
-The safest learning path is:
-
-1. Deploy `dev` in a dedicated sandbox account.
-2. Verify Terraform, Kubernetes, Argo CD, SSM, logs, and the ALB.
-3. Destroy the sandbox only after reviewing the state and retained resources.
-4. Promote an immutable image and reviewed GitOps change to `prod` through the approval gate.
-
-## 1. Choose the environment
-
-| Environment | Region | Region alias | Terraform directory |
-| --- | --- | --- | --- |
-| dev | `ap-southeast-1` | `apse1` | `terraform/environments/dev` |
-| prod | `us-east-1` | `use1` | `terraform/environments/prod` |
-
-Run the steps for one environment at a time. Do not use dev values in prod.
-
-## 2. Install prerequisites
-
-Install and authenticate these tools:
-
-- Terraform `>= 1.8`
-- AWS CLI
-- kubectl
-- Helm
-- Python 3.12
-- Docker or another OCI builder
-- kubeconform, tfsec, Trivy, and Git
-
-The AWS identity used for the first apply must be allowed to create VPC, EKS, IAM, KMS, ECR, S3, and CloudWatch resources. Use an assumed role or federation; do not store AWS access keys in GitHub.
-
-On Windows, run the Bash commands through WSL2 or Git Bash. Terraform, AWS CLI, kubectl, and Helm can run from PowerShell, but `scripts/bootstrap.sh` and the repository check scripts require Bash.
-
-Verify access:
-
-```bash
-aws sts get-caller-identity
-aws configure get region
-terraform version
-kubectl version --client
-helm version
-```
-
-## 3. Prepare Terraform state
-
-Create one encrypted, versioned S3 state bucket per AWS account or approved shared state location. Enable public-access blocking and a restrictive bucket policy. The repository uses Terraform's S3 lock file support, so the Terraform execution role must be able to read and write the state bucket.
-
-Uncomment and customize the backend in both environment `versions.tf` files. Use a different state key for each environment:
-
-```hcl
-backend "s3" {
-  bucket       = "YOUR_TERRAFORM_STATE_BUCKET"
-  key          = "eks/dev/terraform.tfstate"
-  region       = "ap-southeast-1"
-  encrypt      = true
-  use_lockfile = true
-}
-```
-
-Use `eks/prod/terraform.tfstate` and `us-east-1` for production. Never commit state, plans, credentials, or `terraform.tfvars`.
-
-## 4. Configure Terraform variables
-
-Copy the example for the environment you are deploying:
-
-```bash
-cp terraform/environments/dev/terraform.tfvars.example terraform/environments/dev/terraform.tfvars
-```
-
-Change these values:
-
-- `project`: lowercase project name.
-- `admin_role_arns`: complete IAM role ARNs allowed to administer EKS, for example `arn:aws:iam::<ACCOUNT_ID>:role/platform-admin`.
-- `github_oidc_subjects`: exact GitHub subject, for example `repo:ORG/REPO:ref:refs/heads/main`.
-- `app_domain`: DNS name for the application (`dev.game.example.com` or `game.example.com`).
-- `route53_zone_id`: ID of the existing public Route 53 hosted zone containing `app_domain`.
-- `infra_version`: optional local deployment identifier; CI sets this automatically to the Git branch name.
-- `SecurityContact` in the environment `main.tf`: a real support address.
-- `region_short_name` only when adding a region; keep `apse1` and `use1` stable.
-
-The root modules create the KMS key, ECR repository, S3 log bucket, encrypted DynamoDB ArenaGrid table, Cognito authentication, WAF, VPC endpoints, SSM node permissions, ALB controller role, game IRSA role, and Fluent Bit role. Review all IAM and public ALB changes in the plan.
-
-All AWS resources receive an `InfraVersion` tag. GitHub Actions sets it to the branch being deployed, so a production deployment from `main` is tagged `InfraVersion=main`. A local apply uses `InfraVersion=local` unless you set it explicitly:
-
-```bash
-terraform -chdir=terraform/environments/dev apply -var='infra_version=feature-game-api'
-```
-
-## 5. Validate and deploy dev
-
-From the repository root:
-
-```bash
-terraform fmt -check -recursive terraform
-terraform -chdir=terraform/environments/dev init \
-  -backend-config="bucket=$TF_STATE_BUCKET_DEV" \
-  -backend-config="key=eks/dev/terraform.tfstate" \
-  -backend-config="region=ap-southeast-1" \
-  -backend-config="encrypt=true" \
-  -backend-config="use_lockfile=true"
-terraform -chdir=terraform/environments/dev validate
-terraform -chdir=terraform/environments/dev plan -out=tfplan
-terraform -chdir=terraform/environments/dev apply tfplan
-aws eks update-kubeconfig --region ap-southeast-1 \
-  --name "$(terraform -chdir=terraform/environments/dev output -raw cluster_name)"
-```
-
-The convenience script performs the same flow:
-
-```bash
-$env:ENVIRONMENT = "dev" # PowerShell
-$env:TF_STATE_BUCKET_DEV = "your-dev-state-bucket"
-bash scripts/bootstrap.sh # Bash, WSL, or Linux
-```
-
-Record these outputs:
-
-```bash
-terraform -chdir=terraform/environments/dev output
-```
-
-Important outputs are `cluster_name`, `vpc_id`, `ecr_repository_url`, `alb_controller_role_arn`, `game_role_arn`, `fluent_bit_role_arn`, `logs_bucket_name`, `game_table_name`, `certificate_arn`, `waf_web_acl_arn`, `cognito_user_pool_arn`, `cognito_user_pool_client_id`, and `cognito_user_pool_domain`.
-
-## 6. Configure GitOps values
-
-Replace these placeholders before Argo CD reconciliation:
-
-| File or value | Replace with |
-| --- | --- |
-| `REPLACE_WITH_TERRAFORM_CLUSTER_NAME` | Terraform `cluster_name` output |
-| `REPLACE_WITH_TERRAFORM_VPC_ID` | Terraform `vpc_id` output |
-| `REPLACE_WITH_ALB_CONTROLLER_ROLE_ARN` | Terraform `alb_controller_role_arn` output |
-| `REPLACE_WITH_FLUENT_BIT_ROLE_ARN` | Terraform `fluent_bit_role_arn` output |
-| `REPLACE_WITH_LOGS_BUCKET_NAME` | Terraform `logs_bucket_name` output |
-| `REPLACE_WITH_ACM_CERTIFICATE_ARN` | Terraform `certificate_arn` output |
-| `REPLACE_WITH_WAF_WEB_ACL_ARN` | Terraform `waf_web_acl_arn` output |
-| `REPLACE_WITH_GAME_TABLE_NAME` | Terraform `game_table_name` output |
-| `REPLACE_WITH_GAME_ROLE_ARN` | Terraform `game_role_arn` output |
-| Cognito auth annotation values | Terraform Cognito outputs |
-| `REPLACE_WITH_APP_DOMAIN` | Terraform `app_domain` output |
-| `REPLACE_WITH_AWS_REGION` | `ap-southeast-1` or `us-east-1` |
-| `REPLACE_WITH_ECR_URL` | Terraform `ecr_repository_url` output |
-| `ORG/REPO` | GitHub organization and repository in Argo and Terraform files |
-| `game.example.com` | DNS name owned by your organization |
-
-Use complete IAM role ARNs for IRSA annotations. A role name such as `eks-platform-apse1-dev-alb-controller` is not a valid replacement for the ARN.
-
-After Terraform apply, render the account-specific GitOps values automatically:
+## 2. Create state storage, then initialize
 
 ```bash
 export ENVIRONMENT=dev
-bash scripts/render-gitops.sh
-git diff -- gitops
+export TF_VAR_project=eks-platform
+export TF_VAR_owner=platform-team
+export TF_VAR_cost_center=engineering
+export TF_STATE_BUCKET_DEV=YOUR-GLOBALLY-UNIQUE-DEV-STATE-BUCKET
+python scripts/terraform_init.py --environment dev
+terraform -chdir=terraform/environments/dev plan -lock-timeout=5m -out=tfplan
+terraform -chdir=terraform/environments/dev apply -lock-timeout=5m tfplan
 ```
 
-Review the rendered values, commit them through code review, and let Argo CD reconcile. Do not commit Terraform state, credentials, or generated plan files.
+`terraform_init.py` calls the AWS SDK first: verify account ownership, create a missing bucket, wait for existence, verify region, merge naming/ownership tags, block all public access, enforce bucket-owner ownership, enable versioning, preserve existing encryption (or enable AES256), and merge a deny-insecure-transport policy. Any failure stops before init. It then initializes with `use_lockfile=true` and `encrypt=true`. It never creates a DynamoDB lock table. A normal re-run preserves objects and existing policy statements. Use a dedicated state bucket because bootstrap hardens bucket-level access settings.
 
-The ALB controller is configured in `gitops/platform/applications.yaml`. The application ALB is declared in `gitops/apps/sample-app/ingress.yaml`; the controller creates the ALB and dynamically registers pod IPs.
+The bootstrap principal needs `sts:GetCallerIdentity`, S3 bucket creation/configuration/read permissions (including `s3:GetBucketTagging` and `s3:PutBucketTagging`) on the named bucket, `s3:ListBucket`, and object access. Terraform needs `s3:GetObject`/`s3:PutObject` on `eks/dev/terraform.tfstate`, plus `s3:GetObject`/`s3:PutObject`/`s3:DeleteObject` on `eks/dev/terraform.tfstate.tflock`. Existing KMS-encrypted buckets also require key permissions. State includes sensitive session-key material; only infrastructure administrators/CI should access it. No lifecycle rule expires state versions. Retain the bucket after cluster destruction.
 
-## 7. Install Argo CD and bootstrap applications
+Native locking details: [HashiCorp S3 backend documentation](https://developer.hashicorp.com/terraform/language/backend/s3). Backend-free `init -backend=false` used for validation does not access state and needs no bucket.
 
-Install Argo CD into the cluster using the version approved by your organization. A basic Helm installation is:
+`ENVIRONMENT=dev bash scripts/bootstrap.sh` combines bootstrap, plan, apply and kubeconfig. Review your variables before using it. For prod, set `TF_STATE_BUCKET_PROD` and `ENVIRONMENT=prod`.
+
+## 3. Build and push the image
 
 ```bash
+export REGION=ap-southeast-1
+export ECR_URL=$(terraform -chdir=terraform/environments/dev output -raw ecr_repository_url)
+aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "${ECR_URL%%/*}"
+export IMAGE_TAG=$(git rev-parse HEAD)
+docker build --platform linux/amd64 -t "$ECR_URL:$IMAGE_TAG" application/sample-app
+# Run your image scan before pushing/deploying; CI runs Trivy with HIGH/CRITICAL gating.
+docker push "$ECR_URL:$IMAGE_TAG"
+export IMAGE_URI="$ECR_URL@$(aws ecr describe-images --region "$REGION" --repository-name "${ECR_URL#*/}" --image-ids imageTag="$IMAGE_TAG" --query 'imageDetails[0].imageDigest' --output text)"
+```
+
+Use a new tag for a changed image; ECR tags are immutable. `application.yml` runs tests, scans, publishes and opens a dev image PR. The first image is published even if the rendered tree is not yet available; use that digest for the next step.
+
+## 4. Render and deploy GitOps
+
+```bash
+export GITOPS_REPO_URL=https://github.com/YOUR_ORG/YOUR_REPO.git
+python scripts/render_gitops.py --environment dev
+```
+
+Review and commit `gitops/environments/dev` to main. The renderer requires an ECR SHA256 digest, resolves all Terraform outputs, and leaves shared templates untouched. If upgrading an already-rendered tree, remove obsolete cert-manager/Prometheus files from that tree and review Argo CD deletion plans before syncing; this repository change does not remove live cloud resources itself.
+
+Before installing Argo CD, bootstrap the pinned Karpenter CRDs and controller from a host that can reach the EKS API. It uses EKS Pod Identity and runs two controller replicas on the managed system nodes. Helm owns the controller/CRDs; Argo CD owns the NodePool and EC2NodeClass. Do not give both tools ownership of the same objects.
+
+```bash
+python scripts/bootstrap_karpenter.py --environment dev
+```
+
+For an existing Karpenter installation, review CRD ownership and the release upgrade notes before running the script; it does not automatically take over CRDs owned by a different release.
+
+```bash
+aws eks update-kubeconfig --region "$REGION" --name "$(terraform -chdir=terraform/environments/dev output -raw cluster_name)"
+# Pinned Argo CD chart; keep the server ClusterIP-only.
+export ARGOCD_CHART_VERSION=10.8.2
 helm repo add argo https://argoproj.github.io/argo-helm
 helm repo update
-helm upgrade --install argocd argo/argo-cd \
-  --namespace argocd --create-namespace
-```
-
-Before applying bootstrap manifests, replace `https://github.com/ORG/REPO.git` in these files with the repository URL:
-
-- `gitops/argocd/bootstrap/namespace.yaml`
-- `gitops/argocd/projects/platform-project.yaml`
-
-Then apply the bootstrap:
-
-```bash
-kubectl apply -f gitops/argocd/bootstrap/namespace.yaml
-kubectl apply -f gitops/argocd/projects/platform-project.yaml
-```
-
-Argo CD will reconcile:
-
-- `gitops/platform`: AWS Load Balancer Controller, Karpenter, cert-manager, and metrics-server.
-- `gitops/observability`: Prometheus, Grafana, Alertmanager, and Fluent Bit.
-- `gitops/apps/sample-app`: namespace, deployment, Service, Ingress, and network policies.
-
-Check status:
-
-```bash
-kubectl get applications -n argocd
-kubectl get pods -A
-kubectl -n platform-system get pods
-kubectl -n sample-app get deployment,service,ingress
-```
-
-## 8. Build and publish the application
-
-Run tests locally:
-
-```bash
-cd application/sample-app
-python -m unittest discover -s tests -v
-cd ../..
-```
-
-Build, scan, and push an immutable image to the Terraform-created ECR repository. The GitHub Actions application workflow does this on a push to `main` under the `dev` environment. Configure:
-
-- `AWS_APP_ROLE_ARN`: GitHub OIDC role allowed to push to ECR.
-- `ECR_REPOSITORY`: exact repository name from Terraform.
-
-The workflow updates the dev GitOps image tag with the commit SHA. Promote the same image digest to production through a reviewed GitOps change; do not rebuild a different production image.
-
-## 9. Access the application through ALB
-
-The application Service remains `ClusterIP`. The AWS Load Balancer Controller creates an internet-facing ALB from the Ingress:
-
-```bash
+helm upgrade --install argocd argo/argo-cd --version "$ARGOCD_CHART_VERSION" --namespace argocd --create-namespace -f gitops/argocd/values.yaml --wait --timeout 10m
+kubectl apply -f gitops/environments/dev/argocd/projects/platform-project.yaml
+kubectl apply -f gitops/environments/dev/argocd/bootstrap/namespace.yaml
+kubectl apply --dry-run=server -f gitops/environments/dev/platform/karpenter-resources/nodepool.yaml
+kubectl wait --for=condition=Ready ec2nodeclass --all --timeout=5m
+kubectl wait --for=condition=Ready nodepool --all --timeout=5m
+kubectl -n sample-app rollout status deployment/sample-app --timeout=10m
 kubectl -n sample-app get ingress sample-app
 ```
 
-Create a DNS alias record for the configured application domain pointing to the reported ALB hostname. The ACM module creates the certificate validation record; you still need the application DNS record. Then test over HTTPS:
+Argo CD chart [10.8.2](https://github.com/argoproj/argo-helm/releases/tag/argo-cd-10.8.2) is pinned; review upgrades explicitly. For private Git repositories, configure Argo CD repository credentials first using its documented secret format; never commit credentials. Argo CD remains private; use `kubectl -n argocd port-forward svc/argocd-server 8443:443` for administration.
+
+Create a Route 53 alias A record for your app domain pointing to the ALB shown by the ingress. ACM validation records are created by Terraform; the application alias is added after ALB provisioning. Visit the HTTPS domain, sign up, verify email, create a solo game, then test a friend invite in another signed-in browser. Check `/healthz`, `/readyz`, S3 log delivery and rolling restart behavior. These live checks require your AWS account and DNS.
+
+## CI configuration
+
+Create GitHub environments `dev` and optionally `prod`. Restrict prod to main and enable required reviewers. Each environment needs secrets `AWS_TERRAFORM_ROLE_ARN` and `TF_STATE_BUCKET`; variables `APP_DOMAIN`, `ROUTE53_ZONE_ID`, `ADMIN_ROLE_ARNS` (JSON array), `GITHUB_OIDC_SUBJECTS` (JSON array), `OWNER`, `COST_CENTER`, `KARPENTER_AMI_ID`, and optionally `TFVARS_JSON`. Create the initial Terraform OIDC deployment role out of band with a trust policy scoped to this repository/environment; it cannot bootstrap its own credentials. Terraform creates a separate ECR-only role for application builds.
+
+For the application workflow, dev also needs `AWS_APP_ROLE_ARN` (Terraform's `github_actions_role_arn` output), `ECR_REPOSITORY` (repository name, not full URL), and `GITOPS_PR_TOKEN` scoped to creating deployment PRs. Infrastructure CI validates PRs without cloud credentials. Manually dispatch `terraform` on main with action `plan` or `apply`; it creates the backend before init. No automatic production deployment occurs on push.
+
+## Existing infrastructure and cleanup
+
+Review `terraform plan` carefully before adopting this simplified layout: interface endpoints and a third AZ were removed in the earlier layout; this revision adds Karpenter and changes managed node sizing/names; subnet/NAT/node changes can disrupt an existing cluster. The Cognito client changes from ALB authentication to application PKCE login, so users must sign in again. Back up state and game data and drain old nodes before removing their capacity.
+
+For cleanup, first remove application ingresses through Argo CD and wait for ALB deletion; otherwise controller-managed load balancers can block VPC destruction. Stop Argo reconciliation. Drain and delete Karpenter workload nodes/NodeClaims while its controller, IAM role, interruption queue and VPC still exist; confirm the EC2 instances terminate before removing Karpenter. Disable DynamoDB deletion protection only when intentionally deleting game data, and review a `terraform plan -destroy`. Log buckets intentionally require manual retention/emptying decisions. Initialize teardown using `python scripts/terraform_init.py --environment dev --check-only`; this never recreates a missing backend bucket. Never delete the state bucket as part of normal environment cleanup.
+
+## Production deployment checklist
+
+1. **Use separate AWS accounts/state for dev and prod where possible.** In GitHub create the target environment, protect `main`, and require reviewers for prod. Create the initial Terraform OIDC role outside this stack. Scope trust to `repo:ORG/REPO:environment:dev` or `prod`. Give that role the infrastructure provisioning permissions, including Karpenter IAM roles/policies, `iam:PassRole`, EKS access entries/Pod Identity, SQS and EventBridge. The ECR-only app role cannot provision infrastructure.
+2. **Choose names once.** Read [AWS naming and tagging](docs/aws-naming.md). Provide `OWNER` and `COST_CENTER` environment variables and the same values in local tfvars. `TFVARS_JSON` can set `project`, `region_short_name`, `github_oidc_provider_arn`, and `karpenter_cpu_limit`. Do not put credentials in it. GitHub environment variables explicitly mapped to `TF_VAR_*` must be populated; do not rely on empty values being replaced by Terraform defaults.
+3. **Pin an AMI per region.** Discover the current AWS image with the command below, test it in dev, then set `KARPENTER_AMI_ID` in GitHub and `karpenter_ami_id` in local tfvars. Terraform verifies Amazon ownership, x86_64 architecture and the EKS 1.34 AL2023 image family. Production should promote a tested release, not follow `latest` automatically. The AMI is regional; do not reuse a Singapore AMI ID in Virginia.
+4. **Check capacity and network prerequisites.** Verify On-Demand EC2 vCPU quota, available subnet IPs, and supported c/m/r generation 6+ x86 instance types in both AZs. Keep NAT/HTTPS access for EC2, EKS, SSM, STS, SQS, ECR and public chart registries; the private API does not mean the VPC is air-gapped. Prod has one NAT per AZ. Ensure the bootstrap IAM role is in `ADMIN_ROLE_ARNS`, and run Helm/kubectl on a VPC-connected host or through a restricted public endpoint. GitHub-hosted Terraform runs only AWS APIs; it does not bootstrap Kubernetes over the private endpoint.
+5. **Run `terraform` plan, review replacements, then apply on main.** Defaults are two `m6i.large` managed system nodes plus Karpenter workload nodes. The workload pool is capped at 32 vCPU in dev and 128 in prod; these limits exclude managed nodes and are eventually consistent, not hard billing caps. Configure AWS Budgets and quota alerts separately.
+6. **Publish the app image.** Configure dev secret `AWS_APP_ROLE_ARN`, variable `ECR_REPOSITORY`, and secret `GITOPS_PR_TOKEN`. Run `application`. On the initial deployment it pushes the image and intentionally stops when the rendered tree is absent. Resolve the digest from ECR, set `IMAGE_URI`, render, review and commit the environment tree. Subsequent image PRs must be merged for Argo CD to deploy. The current application workflow targets dev only: for prod, copy/promote the tested image to the prod ECR repository, use its digest when rendering prod, and review/merge the prod manifest change. Do not assume the dev build deploys prod.
+7. **Bootstrap in order.** Render GitOps, run `bootstrap_karpenter.py`, install Argo CD, configure repository credentials if private, then apply the AppProject/root applications. If a `kubectl wait` reports no resources yet, wait for Argo CD to create them, inspect its sync status and retry. NodePool pruning is deliberately disabled to prevent an accidental Git deletion terminating workload capacity; remove pools through a reviewed drain procedure.
+8. **Complete ingress/DNS and test the service.** Wait for healthy ALB targets and the ACM certificate, create the Route 53 alias for `APP_DOMAIN`, then test HTTPS, login/email delivery, `/healthz`, `/readyz`, a game across two sessions and a rolling restart. Do not use the ALB hostname as the application's login URL: Cognito callbacks and host routing use your configured domain.
+9. **Prove scaling and recovery in dev before promotion.** Use the checks below. Establish application SLOs and paging for pending pods, unavailable replicas, Karpenter errors, node readiness, ALB 5xx/latency and exhausted pool capacity. Add metrics collection for Karpenter; this repository does not install a Prometheus backend or a paging destination. Test DynamoDB restore, node failure and credential rotation. Review Cognito MFA/email quotas and production email delivery.
 
 ```bash
-curl https://game.example.com/healthz
-curl https://game.example.com/api/game/state
-curl -X POST https://game.example.com/api/game/move \
-  -H 'Content-Type: application/json' \
-  -d '{"player":"red","position":0}'
+# Discover a candidate AMI, then test and record the exact ID in configuration.
+aws ssm get-parameter --region ap-southeast-1 \
+  --name /aws/service/eks/optimized-ami/1.34/amazon-linux-2023/x86_64/standard/recommended/image_id \
+  --query Parameter.Value --output text
+
+kubectl -n kube-system get pods -l app.kubernetes.io/name=karpenter -o wide
+kubectl get ec2nodeclasses,nodepools,nodeclaims
+kubectl get nodes -L workload-tier,karpenter.sh/nodepool,karpenter.sh/capacity-type,topology.kubernetes.io/zone
+kubectl -n sample-app get pods -o wide
+kubectl -n sample-app get hpa,pdb
+kubectl -n kube-system logs deployment/karpenter --all-pods=true --tail=100
+kubectl top nodes
 ```
 
-The Ingress configures ACM HTTPS and redirects HTTP to HTTPS. WAF and per-IP rate limiting are configured by Terraform. Add authentication and authorization for mutation endpoints before broad public exposure. ArenaGrid game state is stored in encrypted DynamoDB with point-in-time recovery; WebSocket presence and matchmaking remain future extensions.
+For a controlled scale-out test, add a temporary dev Deployment to Git with `nodeSelector: {workload-tier: application}` and CPU/memory requests large enough to exceed the current workload nodes, but below the NodePool limit. Use an approved image. Confirm pending pods cause new NodeClaims, nodes join Ready and pods become Running; then remove the test Deployment through Git and observe consolidation after at least five minutes. Do not scale the game manually while its HPA owns the replica count. Delete only the temporary test workload, not the pool or controller. A PodDisruptionBudget or topology constraint can legitimately prevent further consolidation.
 
-## 10. SSM access to nodes
+## How bin packing works here
 
-EKS managed nodes and Karpenter nodes receive `AmazonSSMManagedInstanceCore`. The VPC includes SSM, SSMMessages, EC2 Messages, and CloudWatch Logs endpoints.
+Karpenter batches unschedulable pods, evaluates their resource requests and scheduling constraints, and selects suitable instance capacity. `WhenEmptyOrUnderutilized` consolidation can remove or replace underused nodes after a five-minute delay, with at most one voluntary node disruption at a time. This is Karpenter provisioning/consolidation, not a custom Kubernetes `MostAllocated` scheduler configuration. EKS retains its default scheduler. Accurate requests are essential; measure the application's 50m CPU/64Mi memory defaults under real load and tune them before production.
 
-Find managed instances and start a session:
+The app is restricted to the workload pool and must span at least two AZs. This intentionally leaves an availability floor rather than packing all replicas onto one node. It also means an AZ outage can leave some replicas Pending until capacity in that AZ returns; test whether this strict policy matches your recovery objectives. Existing replicas in the surviving AZ can continue serving. The managed system pool stays at two nodes; Karpenter does not resize it. Watch its capacity as platform controllers grow.
 
-```bash
-aws ssm describe-instance-information --region ap-southeast-1
-aws ssm start-session --target <INSTANCE_ID> --region ap-southeast-1
-```
+The default workload pool uses On-Demand only. To permit Spot, review the NodePool capacity requirement and allow `spot` alongside `on-demand` in dev first. Verify/create the account-level EC2 Spot service-linked role before doing so. The interruption queue/EventBridge wiring is already included, but interruptions can exceed voluntary disruption budgets and are not prevented by a PDB. A mixed pool does not guarantee a minimum On-Demand share.
 
-Use SSM instead of opening SSH to worker nodes.
-
-## 11. Logs and encryption
-
-The deployment creates:
-
-- A customer-managed KMS key for EKS secrets, ECR, and S3 logs.
-- A private, versioned S3 bucket for Kubernetes logs.
-- A Fluent Bit IRSA role restricted to that bucket.
-- CloudWatch and AWS service VPC endpoints for private node operation.
-
-Verify log delivery:
-
-```bash
-kubectl -n observability get pods
-aws s3 ls s3://<logs_bucket_name>/kubernetes/ --region ap-southeast-1
-```
-
-Set retention and cross-account controls according to your compliance requirements.
-
-## 12. Production deployment and approval
-
-Production Terraform is deployed only through `.github/workflows/terraform.yml`:
-
-1. `validate` checks both Terraform roots.
-2. `plan-prod` creates `prod.tfplan` and readable `prod-plan.txt` after a merge to `main`.
-3. A GitHub Environment named exactly `prod` pauses `apply-prod` for required reviewers.
-4. `apply-prod` applies the exact uploaded plan after approval.
-
-Configure GitHub before using this flow:
-
-- Create Environment `prod`.
-- Add required reviewers.
-- Restrict deployments to `main`.
-- Add `AWS_PROD_TERRAFORM_ROLE_ARN` as a repository or organization secret and as a `prod` environment secret.
-- Ensure the production role can access the production state backend and account.
-
-Never bypass the environment approval by running an unreviewed local production apply. If emergency access is required, record the incident and review the resulting Terraform state afterward.
-
-Branch deployment rules are enforced in `.github/workflows/terraform.yml`:
-
-- Branches beginning with `feat` such as `feat_test` or `feature-login` can trigger the `deploy-dev` job.
-- The `deploy-dev` job targets the `dev` GitHub Environment and requires its configured reviewers before applying.
-- `InfraVersion` is set to the feature branch name.
-- Other branch pushes do not deploy infrastructure.
-- Only `main` can trigger the production plan and apply jobs.
-
-Configure the `dev` Environment with required reviewers and the `AWS_TERRAFORM_ROLE_ARN` secret. Configure the `prod` Environment with required reviewers, protected deployment branches limited to `main`, and `AWS_PROD_TERRAFORM_ROLE_ARN`. GitHub Environment protection is required for the manual approval; the YAML job target alone does not create reviewers.
-
-## 13. Verification and rollback
-
-Run repository checks before merging:
-
-```bash
-(cd application/sample-app && bash check.sh)
-(cd terraform && bash check.sh)
-(cd gitops && bash argocd/check.sh && bash platform/check.sh && bash observability/check.sh && bash apps/sample-app/check.sh)
-```
-
-For an application rollback, revert the GitOps image change to the previously approved digest and let Argo CD synchronize. For infrastructure rollback, create a reviewed Terraform change; do not delete the state file or manually remove managed resources. Check ALB target health, pod readiness, Argo sync status, CloudWatch/EKS control-plane logs, and S3 Fluent Bit output during incident response.
-
-## 14. Destroy after testing
-
-The Terraform workflow includes a manual `workflow_dispatch` destroy path. It never runs from a push. In GitHub Actions, open the `terraform` workflow and select **Run workflow**:
-
-1. Choose `dev` or `prod`.
-2. Type `DESTROY-DEV` or `DESTROY-PROD` exactly.
-3. Review the destroy plan in the job log.
-4. Wait for the selected GitHub Environment approval if reviewers are configured.
-5. The workflow applies the destroy plan.
-
-The workflow uses the environment-specific AWS role and region. Production still requires the `prod` Environment protection configured earlier. Destroying an environment removes the EKS cluster, VPC, IAM resources, KMS key, ECR repository, and log bucket managed by that Terraform state. The S3 log bucket is protected from accidental non-empty deletion, so empty it manually first when required:
-
-```bash
-aws s3 rm s3://<logs_bucket_name> --recursive --region ap-southeast-1
-```
-
-Treat this as permanent data deletion. Export any logs or artifacts required for audit before destroying the environment.
+Node expiration is disabled to avoid unplanned age-based drains. Roll out tested AMI pins regularly through Terraform output/rendered GitOps; Karpenter drift replacement uses the disruption budget and respects PDBs. Monitor for blocked drains so nodes do not remain unpatched. Review the [Karpenter compatibility matrix](https://karpenter.sh/docs/upgrading/compatibility/), [NodePool disruption settings](https://karpenter.sh/v1.12/concepts/nodepools/) and [AMI management](https://karpenter.sh/v1.12/tasks/managing-amis/) for upgrades. Controller and CRD chart versions are pinned together to 1.12.0 in `scripts/bootstrap_karpenter.py`; the AWS IAM submodule is pinned to 21.25.0.

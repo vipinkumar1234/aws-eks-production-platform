@@ -1,12 +1,13 @@
 name: application
 on:
+  pull_request:
+    paths: [application/**, scripts/**, .github/workflows/application.yml]
+  workflow_dispatch:
   push:
     branches: [main]
     paths: [application/**]
 permissions:
-  contents: write
-  id-token: write
-  packages: write
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -14,9 +15,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
+      - run: python -m pip install -r application/sample-app/requirements.txt
       - run: python -m unittest discover -s tests -v
         working-directory: application/sample-app
   build:
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    if: github.event_name != 'pull_request'
     needs: test
     runs-on: ubuntu-latest
     environment: dev
@@ -31,29 +38,47 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: application/sample-app
-          push: true
+          push: false
+          load: true
           tags: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
       - uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
           severity: HIGH,CRITICAL
           exit-code: 1
+      - name: Push scanned image
+        run: docker push "$IMAGE"
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+      - name: Resolve immutable image digest
+        run: |
+          DIGEST=$(aws ecr describe-images --repository-name "$REPOSITORY" --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
+          echo "IMAGE_URI=$REGISTRY/$REPOSITORY@$DIGEST" >> "$GITHUB_ENV"
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPOSITORY: ${{ vars.ECR_REPOSITORY }}
       - name: Update dev GitOps image
         run: |
           python - <<'PY'
+          import os
           from pathlib import Path
-          manifest = Path("gitops/apps/sample-app/deployment.yaml")
+          manifest = Path("gitops/environments/dev/apps/sample-app/deployment.yaml")
+          if not manifest.exists():
+              raise SystemExit("Bootstrap and commit the rendered dev tree first; image has been published.")
           content = manifest.read_text()
-          repository = "${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}"
+          repository = os.environ["IMAGE_URI"]
           lines = content.splitlines()
           for index, line in enumerate(lines):
               if "image:" in line:
-                  lines[index] = f"          image: {repository}:${{ github.sha }}"
+                  lines[index] = f"          image: {repository}"
                   break
           manifest.write_text("\n".join(lines) + "\n")
           PY
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add gitops/apps/sample-app/deployment.yaml
-          git commit -m "deploy sample-app ${{ github.sha }}" || exit 0
-          git push
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITOPS_PR_TOKEN }}
+          branch: deploy/dev-image
+          title: Deploy scanned ArenaGrid image to dev
+          commit-message: Update dev image digest
+          body: Updates only the rendered dev workload to the scanned ECR digest. Review checks before merging.
+          add-paths: gitops/environments/dev/apps/sample-app/deployment.yaml

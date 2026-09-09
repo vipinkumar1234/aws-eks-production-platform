@@ -1,13 +1,13 @@
 provider "aws" {
   region = var.aws_region
-  default_tags { tags = { ManagedBy = "terraform", Project = var.project, Environment = "prod", Region = var.aws_region, InfraVersion = var.infra_version } }
+  default_tags { tags = { ManagedBy = "terraform", Project = var.project, Environment = "prod", Region = var.aws_region, InfraVersion = var.infra_version, Owner = var.owner, CostCenter = var.cost_center } }
 }
 
 data "aws_caller_identity" "current" {}
 
 locals {
   name = "${var.project}-${var.region_short_name}-prod"
-  tags = { Name = local.name, Environment = "prod", Region = var.aws_region, InfraVersion = var.infra_version, SecurityContact = "platform@example.com" }
+  tags = { Environment = "prod", Region = var.aws_region, InfraVersion = var.infra_version, Project = var.project, ManagedBy = "terraform", Owner = var.owner, CostCenter = var.cost_center }
 }
 
 module "kms" {
@@ -20,13 +20,13 @@ module "acm" {
   source          = "../../modules/acm"
   domain_name     = var.app_domain
   route53_zone_id = var.route53_zone_id
-  tags            = local.tags
+  tags            = merge(local.tags, { Name = "${local.name}-app-certificate" })
 }
 module "auth" {
   source        = "../../modules/cognito"
   name          = "${local.name}-arena-grid"
-  domain_prefix = replace(local.name, "_", "-")
-  callback_url  = "https://${var.app_domain}/oauth2/idpresponse"
+  domain_prefix = "${replace(local.name, "_", "-")}-${data.aws_caller_identity.current.account_id}"
+  callback_url  = "https://${var.app_domain}/auth/callback"
   logout_url    = "https://${var.app_domain}/"
   tags          = local.tags
 }
@@ -43,12 +43,14 @@ module "game_data" {
 }
 
 module "vpc" {
-  source   = "../../modules/vpc"
-  name     = "${local.name}-vpc"
-  region   = var.aws_region
-  vpc_cidr = "10.20.0.0/16"
-  azs      = ["us-east-1a", "us-east-1b", "us-east-1c"]
-  tags     = local.tags
+  source             = "../../modules/vpc"
+  name               = "${local.name}-vpc"
+  region             = var.aws_region
+  cluster_name       = "${local.name}-eks"
+  single_nat_gateway = false
+  vpc_cidr           = "10.20.0.0/16"
+  azs                = ["${var.aws_region}a", "${var.aws_region}b"]
+  tags               = local.tags
 }
 module "eks" {
   source                       = "../../modules/eks"
@@ -59,6 +61,8 @@ module "eks" {
   kms_key_arn                  = module.kms.key_arn
   endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
   admin_role_arns              = var.admin_role_arns
+  github_oidc_provider_arn     = var.github_oidc_provider_arn
+  ecr_repository_arn           = module.ecr.repository_arn
   github_oidc_subjects         = var.github_oidc_subjects
   tags                         = local.tags
 }
@@ -81,6 +85,7 @@ module "iam" {
   oidc_provider_arn = module.eks.oidc_provider_arn
   logs_bucket_arn   = module.logs.bucket_arn
   game_table_arn    = module.game_data.table_arn
+  kms_key_arn       = module.kms.key_arn
   tags              = local.tags
 }
 module "alb_controller" {
@@ -89,9 +94,27 @@ module "alb_controller" {
   oidc_provider_arn = module.eks.oidc_provider_arn
   tags              = local.tags
 }
+
 module "karpenter" {
-  source            = "../../modules/karpenter"
-  cluster_name      = module.eks.cluster_name
-  oidc_provider_arn = module.eks.oidc_provider_arn
-  tags              = local.tags
+  source       = "../../modules/karpenter"
+  name         = local.name
+  cluster_name = module.eks.cluster_name
+  tags         = local.tags
+}
+
+# Reject an AMI from the wrong region, publisher, architecture or EKS version.
+data "aws_ami" "karpenter" {
+  owners = ["amazon"]
+  filter {
+    name   = "image-id"
+    values = [var.karpenter_ami_id]
+  }
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
+  }
+  filter {
+    name   = "name"
+    values = ["amazon-eks-node-al2023-x86_64-standard-1.34-*"]
+  }
 }

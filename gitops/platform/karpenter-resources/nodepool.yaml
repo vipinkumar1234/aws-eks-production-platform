@@ -1,0 +1,77 @@
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: REPLACE_WITH_RESOURCE_PREFIX-workload
+spec:
+  amiFamily: AL2023
+  amiSelectorTerms:
+    - id: REPLACE_WITH_KARPENTER_AMI_ID
+  instanceProfile: REPLACE_WITH_KARPENTER_INSTANCE_PROFILE
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: REPLACE_WITH_CLUSTER_NAME
+  securityGroupSelectorTerms:
+    - id: REPLACE_WITH_NODE_SECURITY_GROUP_ID
+  associatePublicIPAddress: false
+  metadataOptions:
+    httpEndpoint: enabled
+    httpTokens: required
+    httpPutResponseHopLimit: 1
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 40Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true
+  tags:
+    Name: REPLACE_WITH_RESOURCE_PREFIX-workload
+    Project: REPLACE_WITH_PROJECT
+    Environment: REPLACE_WITH_ENVIRONMENT
+    Region: REPLACE_WITH_AWS_REGION
+    Owner: REPLACE_WITH_OWNER
+    CostCenter: REPLACE_WITH_COST_CENTER
+    ManagedBy: karpenter
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: REPLACE_WITH_RESOURCE_PREFIX-workload
+spec:
+  template:
+    metadata:
+      labels:
+        workload-tier: application
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: REPLACE_WITH_RESOURCE_PREFIX-workload
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: [amd64]
+        - key: kubernetes.io/os
+          operator: In
+          values: [linux]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: [on-demand]
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: [c, m, r]
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["5"]
+        - key: karpenter.k8s.aws/instance-cpu
+          operator: In
+          values: ["2", "4", "8", "16"]
+      # Patch through reviewed AMI changes. Expiry otherwise bypasses budgets.
+      expireAfter: Never
+  limits:
+    cpu: "REPLACE_WITH_KARPENTER_CPU_LIMIT"
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 5m
+    budgets:
+      - nodes: "1"

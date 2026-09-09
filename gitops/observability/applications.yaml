@@ -1,57 +1,27 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
-metadata: { name: kube-prometheus-stack, namespace: argocd }
+metadata:
+  name: fluent-bit
+  namespace: argocd
 spec:
   project: platform
-  source:
-    repoURL: https://prometheus-community.github.io/helm-charts
-    chart: kube-prometheus-stack
-    targetRevision: 69.0.0
-    helm:
-      values: |
-        prometheus:
-          prometheusSpec:
-            retention: 15d
-        grafana:
-          persistence:
-            enabled: true
-        alertmanager:
-          alertmanagerSpec:
-            replicas: 2
-  destination: { server: https://kubernetes.default.svc, namespace: observability }
-  syncPolicy: { automated: { prune: true, selfHeal: true }, syncOptions: [CreateNamespace=true] }
----
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata: { name: fluent-bit, namespace: argocd }
-spec:
-  project: platform
-  source:
-    repoURL: https://fluent.github.io/helm-charts
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - ServerSideApply=true
+  sources:
+  - repoURL: https://fluent.github.io/helm-charts
     chart: fluent-bit
     targetRevision: 0.48.9
     helm:
-      values: |
-        serviceAccount:
-          create: true
-          name: fluent-bit
-          annotations:
-            eks.amazonaws.com/role-arn: REPLACE_WITH_FLUENT_BIT_ROLE_ARN
-        config:
-          filters: |
-            [FILTER]
-                Name kubernetes
-                Match kube.*
-                Merge_Log On
-          outputs: |
-            [OUTPUT]
-                Name s3
-                Match kube.*
-                bucket REPLACE_WITH_LOGS_BUCKET_NAME
-                region REPLACE_WITH_AWS_REGION
-                total_file_size 10M
-                upload_timeout 10m
-                use_put_object On
-                s3_key_format /kubernetes/$TAG/%Y/%m/%d/%H/%M/%S-$UUID.gz
-  destination: { server: https://kubernetes.default.svc, namespace: observability }
-  syncPolicy: { automated: { prune: true, selfHeal: true }, syncOptions: [CreateNamespace=true] }
+      valueFiles:
+      - $values/gitops/observability/fluent-bit/values.yaml
+  - repoURL: https://github.com/vipinkumar1234/aws-eks-production-platform.git
+    targetRevision: main
+    ref: values

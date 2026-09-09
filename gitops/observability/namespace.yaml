@@ -3,4 +3,5 @@ kind: Namespace
 metadata:
   name: observability
   labels:
-    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce: privileged
+# Fluent Bit requires host access; restrict writes to this namespace.

@@ -1,24 +1,21 @@
-data "aws_caller_identity" "current" {}
-
-resource "aws_iam_role" "node" {
-  name               = "${var.cluster_name}-karpenter-node"
-  assume_role_policy = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" }, Action = "sts:AssumeRole" }] })
-  tags               = var.tags
-}
-
-resource "aws_iam_role_policy_attachment" "node" {
-  for_each   = toset(["AmazonEKSWorkerNodePolicy", "AmazonEC2ContainerRegistryReadOnly", "AmazonEKS_CNI_Policy", "AmazonSSMManagedInstanceCore"])
-  role       = aws_iam_role.node.name
-  policy_arn = "arn:aws:iam::aws:policy/${each.value}"
-}
-
-resource "aws_iam_role" "controller" {
-  name               = "${var.cluster_name}-karpenter-controller"
-  assume_role_policy = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Principal = { Federated = var.oidc_provider_arn }, Action = "sts:AssumeRoleWithWebIdentity", Condition = { StringEquals = { "${replace(var.oidc_provider_arn, "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/", "")}:aud" = "sts.amazonaws.com", "${replace(var.oidc_provider_arn, "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/", "")}:sub" = "system:serviceaccount:karpenter:karpenter" } } }] })
-  tags               = var.tags
-}
-
-resource "aws_iam_role_policy" "controller" {
-  role   = aws_iam_role.controller.id
-  policy = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Action = ["ec2:CreateFleet", "ec2:RunInstances", "ec2:CreateTags", "ec2:Describe*", "pricing:GetProducts", "ssm:GetParameter", "iam:PassRole"], Resource = "*" }] })
+# AWS-only bootstrap; Helm/CRDs are installed from a VPC-connected host.
+module "karpenter" {
+  source                          = "terraform-aws-modules/eks/aws//modules/karpenter"
+  version                         = "21.25.0"
+  cluster_name                    = var.cluster_name
+  namespace                       = "kube-system"
+  service_account                 = "karpenter"
+  create_pod_identity_association = true
+  create_instance_profile         = true
+  enable_inline_policy            = true
+  iam_role_name                   = "${var.name}-karpenter-controller"
+  iam_role_use_name_prefix        = false
+  iam_policy_name                 = "${var.name}-karpenter-controller"
+  iam_policy_use_name_prefix      = false
+  node_iam_role_name              = "${var.name}-karpenter-node"
+  node_iam_role_use_name_prefix   = false
+  queue_name                      = "${var.name}-karpenter-interruptions"
+  # EventBridge prefixes allow only 38 characters, including the upstream event type.
+  rule_name_prefix = "${substr(var.name, 0, 8)}-${substr(sha1(var.name), 0, 6)}-"
+  tags             = merge(var.tags, { Name = "${var.name}-karpenter" })
 }
