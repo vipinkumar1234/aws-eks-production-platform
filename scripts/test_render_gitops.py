@@ -19,6 +19,11 @@ class RenderTest(unittest.TestCase):
             bootstrap = files[Path("argocd/bootstrap/namespace.yaml")]
             self.assertIn(f"path: gitops/environments/{env}/apps/sample-app", bootstrap)
             self.assertIn(image, files[Path("apps/sample-app/deployment.yaml")])
+            deployment = next(yaml.safe_load_all(files[Path("apps/sample-app/deployment.yaml")]))
+            pod = deployment["spec"]["template"]["spec"]
+            self.assertGreater(pod["securityContext"]["runAsUser"], 10000)
+            self.assertEqual(pod["containers"][0]["imagePullPolicy"], "Always")
+            self.assertEqual(pod["containers"][0]["image"], image)
             prefix = f"gitops/environments/{env}/"
             for content in files.values():
                 for reference in re.findall(r"\$values/(\S+)", content):
@@ -44,6 +49,11 @@ class RenderTest(unittest.TestCase):
     def test_mutable_image_rejected(self):
         with self.assertRaises(ValueError):
             render("dev", {"ecr_repository_url": {"value": "example"}}, "https://github.com/test/platform.git", "example:latest")
+
+    def test_unresolved_or_invalid_digest_rejected(self):
+        for digest in ("REPLACE_WITH_IMAGE_DIGEST", "abc", "g" * 64):
+            with self.subTest(digest=digest), self.assertRaises(ValueError):
+                render("dev", {"ecr_repository_url": {"value": "example"}}, "https://github.com/test/platform.git", "example@sha256:" + digest)
 
 
 if __name__ == "__main__":

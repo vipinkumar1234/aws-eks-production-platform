@@ -11,16 +11,16 @@ jobs:
   validate-manifests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: '3.12' }
       - run: pip install PyYAML==6.0.2 boto3==1.43.89 jsonschema==4.26.0
       - run: python scripts/validate_yaml.py
       - run: python scripts/validate_karpenter.py
       - run: python scripts/validate_targetgroupbinding.py
       - run: python -m unittest discover -s scripts -p 'test_*.py' -v
-      - uses: actions/setup-go@v5
-        with: { go-version: '1.24.0' }
+      - uses: actions/setup-go@v6
+        with: { go-version: '1.24.0', cache: false }
       - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.6.7
       - name: Validate Kubernetes built-in schemas
         run: |

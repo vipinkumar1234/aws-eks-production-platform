@@ -46,7 +46,7 @@ def render(environment, outputs, repository, image):
         if relative.parts[0] == "environments":
             continue
         content = source.read_text(encoding="utf-8")
-        content = content.replace("REPLACE_WITH_ECR_URL:IMAGE_TAG", image)
+        content = content.replace("REPLACE_WITH_ECR_URL@sha256:REPLACE_WITH_IMAGE_DIGEST", image)
         for token, value in values.items():
             content = content.replace(token, value)
         content = content.replace("https://github.com/vipinkumar1234/aws-eks-production-platform.git", repository)

@@ -20,6 +20,7 @@ aws sts get-caller-identity
 test -f scripts/setup_github_oidc.py || { echo "Push the setup script to GitHub main first"; exit 1; }
 python3 -c 'import boto3; print("Boto3 available:", boto3.__version__)'
 python3 scripts/setup_github_oidc.py
+python3 scripts/setup_github_oidc.py --check-only
 ```
 
 If you already cloned the repository, use `cd ~/aws-eks-production-platform` and `git pull --ff-only origin main` instead of cloning again; keep your local changes and resolve any Git conflict before proceeding. Private repositories require your normal GitHub authentication. Check that STS reports account `001495086648` before running setup.
@@ -94,11 +95,23 @@ After apply, add to GitHub dev:
 
 | Type | Name | Value |
 |---|---|---|
-| Secret | AWS_APP_ROLE_ARN | Terraform output `github_actions_role_arn` |
 | Variable | ECR_REPOSITORY | Repository name, e.g. `eks-platform-apse1-dev-sample-app`, not the full registry URL |
 | Secret | GITOPS_PR_TOKEN | Repository-scoped token with contents and pull-request write permissions, needed for subsequent image PRs |
 
 Run Actions -> **application** on main. It tests/scans and pushes the image. For the first deployment it succeeds after publishing and explains that the GitOps tree must be rendered; it does not try to create an image PR for a missing tree. Once the tree exists, the workflow creates an image update PR, which must be reviewed/merged for Argo CD to deploy.
+
+The application workflow uses `arn:aws:iam::001495086648:role/AutomationAdminAll` directly, just like Terraform. An old `AWS_APP_ROLE_ARN` secret is no longer read. CloudShell is needed for the initial trust setup only; routine infrastructure deployment and image publishing run in GitHub Actions. Kubernetes bootstrap still requires the network access described in step 6.
+
+### Recover from the reported CI failures
+
+1. Commit and push these fixes to **main**. Start new workflow runs on that commit; rerunning an old failed run uses its old workflow definition.
+2. Create/check GitHub environments **dev** and **prod**, restricting deployment branches to **main**. Both workflows request `id-token: write` and audience `sts.amazonaws.com`.
+3. In normal-user CloudShell, update your repository checkout and run the setup and `--check-only` commands in step 1 above. An administrator policy alone does not authorize GitHub federation: the account needs the OIDC provider and environment-scoped role trust.
+4. Run a new Terraform **dev plan**, then **apply** after reviewing the plan. Wait for ECR to exist before starting the application workflow. Configure the ECR variable and PR token listed above.
+5. Run a new **application** workflow on main. If a rendered GitOps tree already exists, regenerate it using step 6 and a real published image digest, then review/commit the changed manifests. The source image placeholder is a rendering template and must never be deployed directly.
+6. If AWS still reports an invalid web identity token after the configuration check passes, collect the full new authentication error and the safe `--check-only` output. The check validates configuration, not a live GitHub token. Investigate AWS STS/provider validation using the [AWS troubleshooting guide](https://repost.aws/knowledge-center/iam-sts-invalididentitytoken); do not share raw OIDC tokens or delete a shared provider.
+
+The deployment now explicitly uses UID/GID 10001, `imagePullPolicy: Always`, and digest-based image rendering. CI keeps all Kubernetes security checks enabled. Actions were updated to Node.js 24 runtimes, including configure-aws-credentials v6, which accepts `allowed-account-ids`. tfsec receives the severity option through its supported `additional_args` input and receives `github_token` to authenticate GitHub API requests. These address the reported configuration warnings; future action releases, service errors and rate limits still require checking new runs.
 
 Images use immutable Git commit tags. Do not rerun a successful image push for the same commit; use the already published digest, or commit an actual image change before building again. Copy the initial `IMAGE_URI` from the workflow summary or resolve it with the command in step 6.
 

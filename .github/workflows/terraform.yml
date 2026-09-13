@@ -26,8 +26,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@v5
+      - uses: hashicorp/setup-terraform@v4
         with: { terraform_version: "1.14.0" }
       - run: terraform fmt -check -recursive terraform
       - run: |
@@ -39,7 +39,8 @@ jobs:
       - uses: aquasecurity/tfsec-action@v1.0.3
         with:
           working_directory: terraform
-          minimum_severity: HIGH
+          additional_args: --minimum-severity HIGH
+          github_token: ${{ github.token }}
   deploy:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: validate
@@ -58,15 +59,16 @@ jobs:
       STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
       REGION: ${{ inputs.environment == 'prod' && 'us-east-1' || 'ap-southeast-1' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: python -m pip install boto3==1.43.89
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with: { terraform_version: "1.14.0" }
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::001495086648:role/AutomationAdminAll
+          audience: sts.amazonaws.com
           allowed-account-ids: "001495086648"
           aws-region: ${{ env.REGION }}
       - name: Resolve deployment defaults and regional AMI

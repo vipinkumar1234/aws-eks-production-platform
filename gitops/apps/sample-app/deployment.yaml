@@ -17,6 +17,9 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
         seccompProfile: { type: RuntimeDefault }
       terminationGracePeriodSeconds: 30
       topologySpreadConstraints:
@@ -28,7 +31,8 @@ spec:
             matchLabels: { app: sample-app }
       containers:
         - name: sample-app
-          image: REPLACE_WITH_ECR_URL:IMAGE_TAG
+          image: REPLACE_WITH_ECR_URL@sha256:REPLACE_WITH_IMAGE_DIGEST
+          imagePullPolicy: Always
           ports: [{ name: http, containerPort: 8080 }]
           env:
             - name: ENVIRONMENT
@@ -56,6 +60,8 @@ spec:
             requests: { cpu: 50m, memory: 64Mi }
             limits: { cpu: 250m, memory: 256Mi }
           securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: [ALL] }

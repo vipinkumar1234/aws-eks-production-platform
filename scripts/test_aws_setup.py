@@ -1,9 +1,17 @@
 import unittest
 from prepare_aws_deployment import prepare, ROLE, ACCOUNT
-from setup_github_oidc import merge_trust, trust_statement
+from setup_github_oidc import check_configuration, merge_trust, trust_statement
 
 
 class DeploymentSetupTest(unittest.TestCase):
+    def test_oidc_configuration_checks_provider_audience_and_trust(self):
+        provider = {'Url': 'token.actions.githubusercontent.com', 'ClientIDList': ['sts.amazonaws.com']}
+        policy = {'Statement': [trust_statement()]}
+        self.assertEqual(check_configuration(provider, policy), [])
+        for invalid in ({**provider, 'Url': 'wrong.example.com'}, {**provider, 'ClientIDList': []}):
+            self.assertTrue(check_configuration(invalid, policy))
+        self.assertTrue(check_configuration(provider, {'Statement': []}))
+
     def test_defaults_match_existing_role_and_repository(self):
         values = prepare('dev', 'vipinkumar1234/aws-eks-production-platform', 'ap-southeast-1', {}, 'ami-0123456789abcdef0')
         self.assertEqual(values['admin_role_arns'], [ROLE])
