@@ -33,14 +33,6 @@ variable "project" {
     error_message = "Project must be 3-13 lowercase letters, digits or hyphens, starting with a letter and ending alphanumeric (ALB and IAM name limits)."
   }
 }
-variable "app_domain" {
-  type    = string
-  default = "play.arenagrid.example.com"
-}
-variable "route53_zone_id" {
-  type        = string
-  description = "Public Route 53 hosted zone ID that contains app_domain"
-}
 variable "infra_version" {
   type        = string
   default     = "local"

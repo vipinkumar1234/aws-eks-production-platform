@@ -1,4 +1,5 @@
 import unittest
+from urllib.parse import parse_qs, urlsplit
 from unittest.mock import Mock
 from src.server import create_app
 from src.storage import MemoryStore
@@ -81,3 +82,34 @@ class ServerTest(unittest.TestCase):
         self.assertIn('code_challenge_method=S256', login.location)
         self.assertEqual(client.get('/auth/callback?state=wrong&code=fake', base_url='https://game.example.com').status_code, 400)
         auth.exchange.assert_not_called()
+
+    def test_cloudfront_login_over_private_http_origin(self):
+        auth = Mock()
+        origin = 'https://dexample.cloudfront.net'
+        app = create_app({'TESTING': True, 'LOCAL_DEMO': False, 'ENVIRONMENT': 'dev',
+                          'SECRET_KEY': 's' * 64, 'APP_ORIGIN': origin,
+                          'COGNITO_DOMAIN': 'https://test.auth.ap-southeast-1.amazoncognito.com',
+                          'COGNITO_CLIENT_ID': 'client',
+                          'SESSION_COOKIE_SECURE': True, 'SESSION_COOKIE_NAME': '__Host-arena'},
+                         store=self.store, auth=auth)
+        client = app.test_client()
+        # CloudFront forwards the viewer Host, while the ALB-to-pod hop is HTTP.
+        upstream = 'http://dexample.cloudfront.net'
+        login = client.get('/login', base_url=upstream)
+        query = parse_qs(urlsplit(login.location).query)
+        self.assertEqual(query['redirect_uri'], [origin + '/auth/callback'])
+        self.assertEqual(login.headers['Cache-Control'], 'no-store')
+        self.assertIn('Secure;', login.headers['Set-Cookie'])
+        self.assertIn('HttpOnly;', login.headers['Set-Cookie'])
+        with client.session_transaction(base_url=upstream) as session:
+            nonce = session['oauth']['nonce']
+        auth.exchange.return_value = 'test-id-token'
+        auth.verify.return_value = {'sub': 'player', 'email': 'player@example.com', 'nonce': nonce}
+        callback = client.get('/auth/callback', query_string={'code': 'test-code', 'state': query['state'][0]}, base_url=upstream)
+        self.assertEqual(callback.status_code, 302)
+        self.assertEqual(auth.exchange.call_args.args[2], origin + '/auth/callback')
+        created = client.post('/api/rooms', json={'mode': 'solo'}, headers={'Origin': origin}, base_url=upstream)
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.headers['Cache-Control'], 'no-store')
+        rejected = client.post('/api/rooms', json={'mode': 'solo'}, headers={'Origin': 'https://evil.example'}, base_url=upstream)
+        self.assertEqual(rejected.status_code, 403)

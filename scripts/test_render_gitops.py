@@ -1,5 +1,6 @@
 import unittest
 import re
+import yaml
 from pathlib import Path
 from render_gitops import TOKENS, render, ROOT
 
@@ -24,6 +25,21 @@ class RenderTest(unittest.TestCase):
                     self.assertTrue(reference.startswith(prefix))
                     self.assertIn(Path(reference[len(prefix):]), files)
         self.assertEqual(original, (ROOT / "gitops/argocd/bootstrap/namespace.yaml").read_bytes())
+
+    def test_cloudfront_origin_and_target_binding(self):
+        outputs = {name: {"value": "example"} for name in TOKENS.values()}
+        outputs["app_domain"] = {"value": "dexample.cloudfront.net"}
+        outputs["app_target_group_arn"] = {"value": "arn:aws:elasticloadbalancing:ap-southeast-1:123456789012:targetgroup/game/1234567890123456"}
+        outputs["ecr_repository_url"] = {"value": "example"}
+        files = render("dev", outputs, "https://github.com/test/platform.git", "example@sha256:" + "a" * 64)
+        self.assertNotIn(Path("apps/sample-app/ingress.yaml"), files)
+        binding = yaml.safe_load(files[Path("apps/sample-app/targetgroupbinding.yaml")])
+        service = next(yaml.safe_load_all(files[Path("apps/sample-app/service.yaml")]))
+        self.assertEqual(binding["spec"]["serviceRef"]["name"], service["metadata"]["name"])
+        self.assertEqual(binding["spec"]["serviceRef"]["port"], service["spec"]["ports"][0]["port"])
+        self.assertEqual(binding["spec"]["targetGroupARN"], outputs["app_target_group_arn"]["value"])
+        self.assertIn("https://dexample.cloudfront.net", files[Path("apps/sample-app/deployment.yaml")])
+        self.assertNotIn("certificate_arn", TOKENS.values())
 
     def test_mutable_image_rejected(self):
         with self.assertRaises(ValueError):

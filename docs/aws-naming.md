@@ -18,8 +18,9 @@ Project identifiers are validated as 3-13 lowercase alphanumeric/hyphen characte
 | VPC flow-log IAM role/policy and log group | `<prefix>-vpc-flow` prefix and `/aws/vpc/<prefix>-vpc/...` |
 | S3/DynamoDB VPC endpoints | `<prefix>-vpc-s3-endpoint` / `<prefix>-vpc-dynamodb-endpoint` Name tags |
 | ECR repository | `<prefix>-sample-app` |
-| ALB | `<prefix>-app`; target groups/security groups retain controller-generated names and cluster/stack tags |
-| ACM and validation records | Certificate has `<prefix>-app-certificate` Name tag; certificate ARN and DNS validation names are AWS-generated |
+| Private ALB / target group / SG | `<prefix>-edge`, `<prefix>-game`, `<prefix>-edge-alb`; Terraform owns these resources |
+| CloudFront / VPC origin | `<prefix>-cdn` Name tag and `<prefix>-origin`; AWS generates the distribution ID/domain and service-managed SG/ENIs |
+| DNS / certificates | No custom domain, Route 53 records or ACM resources are created; CloudFront manages the default certificate |
 | WAF | `<prefix>-web-acl`; rule and metric names remain service-compatible |
 | Cognito / DynamoDB | `<prefix>-arena-grid`; client adds `-game`; Cognito domain includes account ID for uniqueness |
 | KMS | `alias/<prefix>-platform`; key IDs are AWS-generated |
@@ -30,6 +31,6 @@ Project identifiers are validated as 3-13 lowercase alphanumeric/hyphen characte
 
 The state bootstrap preserves existing tags and adds Name, Region, ManagedBy and Environment; export `TF_VAR_project`, `TF_VAR_owner` and `TF_VAR_cost_center` locally to include ownership tags. CI maps owner/cost-center and reads the project from `TFVARS_JSON` (default `eks-platform`).
 
-All Terraform resources supporting provider default tags receive `Project`, `Environment`, `Region`, `ManagedBy`, `InfraVersion`, `Owner`, and `CostCenter`. Karpenter and ALB resources are created outside Terraform, so their manifests explicitly supply ownership/cost tags. AWS IDs, ARNs, ENIs, EKS-managed ASGs and controller-generated resource names cannot all be replaced with custom names. Relationships, ownership tags and AWS-generated suffixes identify those resources. Untaggable objects (inline policies, policy attachments, DNS records, secret versions) inherit identity from their named parent; they cannot have arbitrary tags added.
+All Terraform resources supporting provider default tags receive `Project`, `Environment`, `Region`, `ManagedBy`, `InfraVersion`, `Owner`, and `CostCenter`. Karpenter instances are created outside Terraform, so their manifests explicitly supply ownership/cost tags. CloudFront and the ALB are Terraform-owned. AWS IDs, ARNs, ENIs, EKS-managed ASGs and controller-generated resource names cannot all be replaced with custom names. Relationships, ownership tags and AWS-generated suffixes identify those resources. Untaggable objects (inline policies, policy attachments, DNS records, secret versions) inherit identity from their named parent; they cannot have arbitrary tags added.
 
-Existing installation: inspect `terraform plan` before applying. Node-group/IAM/flow-log naming changes can replace resources; the ALB name annotation applies when a load balancer is created and may require a separate ingress migration for existing ALBs. Do not delete a working ingress merely to change its name. Preserve DNS and data, back up state, and use a reviewed maintenance or blue/green migration where a replacement causes downtime. Fixed Karpenter IAM names require separate prefixes or accounts across environments; only one stack should own an account-level OIDC provider.
+Existing installation: inspect `terraform plan` before applying. Node-group/IAM/flow-log naming changes can replace resources; the domain-free migration introduces a new private ALB and CloudFront, replaces regional WAF with global WAF, and retires the old Ingress/ACM resources. Follow the deployment guide migration section. Preserve DNS and data, back up state, and use a reviewed maintenance or blue/green migration where a replacement causes downtime. Fixed Karpenter IAM names require separate prefixes or accounts across environments; only one stack should own an account-level OIDC provider.

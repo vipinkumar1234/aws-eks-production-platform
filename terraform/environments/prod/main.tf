@@ -16,24 +16,20 @@ module "kms" {
   description = "Customer managed key for ${local.name} EKS, ECR, and logs"
   tags        = local.tags
 }
-module "acm" {
-  source          = "../../modules/acm"
-  domain_name     = var.app_domain
-  route53_zone_id = var.route53_zone_id
-  tags            = merge(local.tags, { Name = "${local.name}-app-certificate" })
-}
 module "auth" {
   source        = "../../modules/cognito"
   name          = "${local.name}-arena-grid"
   domain_prefix = "${replace(local.name, "_", "-")}-${data.aws_caller_identity.current.account_id}"
-  callback_url  = "https://${var.app_domain}/auth/callback"
-  logout_url    = "https://${var.app_domain}/"
+  callback_url  = "${module.edge.app_url}/auth/callback"
+  logout_url    = "${module.edge.app_url}/"
   tags          = local.tags
 }
 module "waf" {
-  source = "../../modules/waf"
-  name   = "${local.name}-web-acl"
-  tags   = local.tags
+  source    = "../../modules/waf"
+  providers = { aws = aws.global }
+  scope     = "CLOUDFRONT"
+  name      = "${local.name}-web-acl"
+  tags      = merge(local.tags, { Region = "us-east-1" })
 }
 module "game_data" {
   source      = "../../modules/dynamodb"
@@ -49,7 +45,7 @@ module "vpc" {
   cluster_name       = "${local.name}-eks"
   single_nat_gateway = false
   vpc_cidr           = "10.20.0.0/16"
-  azs                = ["${var.aws_region}a", "${var.aws_region}b"]
+  azs                = slice(data.aws_availability_zones.origin.names, 0, 2)
   tags               = local.tags
 }
 module "eks" {
@@ -117,4 +113,30 @@ data "aws_ami" "karpenter" {
     name   = "name"
     values = ["amazon-eks-node-al2023-x86_64-standard-1.34-*"]
   }
+}
+
+provider "aws" {
+  alias  = "global"
+  region = "us-east-1"
+  default_tags { tags = merge(local.tags, { Region = "us-east-1" }) }
+}
+# Exclude AZ IDs unsupported by CloudFront VPC origins, independent of account AZ names.
+data "aws_availability_zones" "origin" {
+  state            = "available"
+  exclude_zone_ids = ["use1-az3", "usw1-az2", "apne1-az3", "cac1-az3"]
+  filter {
+    name   = "zone-type"
+    values = ["availability-zone"]
+  }
+}
+module "edge" {
+  source                 = "../../modules/edge"
+  name                   = local.name
+  vpc_id                 = module.vpc.vpc_id
+  private_subnets        = module.vpc.private_subnets
+  node_security_group_id = module.eks.node_security_group_id
+  web_acl_arn            = module.waf.web_acl_arn
+  tags                   = local.tags
+  # CloudFront requires the attached internet gateway even though origins stay private.
+  depends_on = [module.vpc]
 }

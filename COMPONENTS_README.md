@@ -7,7 +7,8 @@
 | DynamoDB | On-demand room storage, conditional writes, abuse limits, TTL, backups |
 | EKS managed nodes | Two system nodes, private subnets, IMDSv2, encrypted storage |
 | Karpenter | Workload node provisioning, bin packing/consolidation, bounded CPU capacity and interruption handling |
-| ALB + ACM + WAF | HTTPS ingress, certificate renewal, common attack and rate rules |
+| CloudFront + private ALB + WAF | AWS-provided HTTPS address, VPC origin, no custom DNS, edge attack/rate rules |
+| TargetGroupBinding | Connects Service pod IPs to the Terraform-owned target group |
 | IAM + KMS + Secrets Manager | Workload permissions, encryption and shared session secret |
 | ECR + GitHub Actions | Scanned, immutable images and OIDC authentication |
 | Argo CD | Git-driven reconciliation of reviewed manifests |

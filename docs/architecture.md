@@ -2,7 +2,8 @@
 
 ```mermaid
 flowchart LR
-  Player -->|HTTPS| ALB[ALB + ACM + WAF]
+  Player -->|HTTPS| Edge[CloudFront default address + WAF]
+  Edge -->|VPC origin, private HTTP| ALB[Terraform-owned internal ALB]
   ALB --> Game[Two game replicas on private EKS nodes]
   Player <-->|Code + PKCE login| Cognito
   Game -->|IRSA| DynamoDB[DynamoDB rooms + limits + TTL]
@@ -18,6 +19,6 @@ flowchart LR
   State --> Init[Terraform init with native lockfile]
 ```
 
-Two AZs, public ALB subnets and private node subnets. Dev has one NAT gateway, prod one per AZ. S3 and DynamoDB gateway endpoints avoid NAT for those services; other AWS HTTPS APIs use NAT. EKS API access is private unless administrator CIDRs are explicitly provided.
+Two supported AZs, private ALB and node subnets, public NAT subnets. Terraform creates the ALB and CloudFront before Kubernetes, derives Cognito URLs from the generated address, and Argo CD applies a TargetGroupBinding to register pod IPs. No Route 53 or custom ACM certificate is required. Dev has one NAT gateway, prod one per AZ. S3 and DynamoDB gateway endpoints avoid NAT for those services; other AWS HTTPS APIs use NAT. EKS API access is private unless administrator CIDRs are explicitly provided.
 
 Cognito login is implemented once, in the application. Signed, secure HttpOnly cookies carry the session; PKCE/state/nonce and issuer/audience/expiry checks protect login. DynamoDB conditional writes serialize room transitions across workers. The same Secrets Manager session key is loaded by all replicas at startup.

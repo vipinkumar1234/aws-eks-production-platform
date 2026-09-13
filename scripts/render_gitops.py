@@ -11,7 +11,7 @@ TOKENS = {
     "TERRAFORM_CLUSTER_NAME": "cluster_name", "CLUSTER_NAME": "cluster_name",
     "TERRAFORM_VPC_ID": "vpc_id", "ALB_CONTROLLER_ROLE_ARN": "alb_controller_role_arn",
     "FLUENT_BIT_ROLE_ARN": "fluent_bit_role_arn", "LOGS_BUCKET_NAME": "logs_bucket_name",
-    "ACM_CERTIFICATE_ARN": "certificate_arn", "APP_DOMAIN": "app_domain",
+    "APP_TARGET_GROUP_ARN": "app_target_group_arn", "APP_DOMAIN": "app_domain",
     "WAF_WEB_ACL_ARN": "waf_web_acl_arn", "GAME_TABLE_NAME": "game_table_name",
     "GAME_ROLE_ARN": "game_role_arn", "SESSION_SECRET_ARN": "session_secret_arn",
     "COGNITO_ISSUER": "cognito_issuer",
@@ -69,6 +69,11 @@ def main():
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8", newline="\n")
+    # Exact obsolete generated path only; Argo removes the old controller-owned ALB on sync.
+    obsolete = destination / "apps/sample-app/ingress.yaml"
+    if obsolete.exists():
+        obsolete.unlink()
+        print("Removed obsolete generated ingress.yaml. Review the migration before syncing an existing cluster.")
     print(f"Rendered {len(files)} files into {destination}; review and commit before bootstrap.")
 
 

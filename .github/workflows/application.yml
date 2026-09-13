@@ -58,13 +58,20 @@ jobs:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
           REPOSITORY: ${{ vars.ECR_REPOSITORY }}
       - name: Update dev GitOps image
+        id: gitops
         run: |
           python - <<'PY'
           import os
           from pathlib import Path
           manifest = Path("gitops/environments/dev/apps/sample-app/deployment.yaml")
           if not manifest.exists():
-              raise SystemExit("Bootstrap and commit the rendered dev tree first; image has been published.")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                  output.write("ready=false\n")
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+                  summary.write("Image published: `" + os.environ["IMAGE_URI"] + "`. Render and commit the dev GitOps tree, then bootstrap Kubernetes.\n")
+              raise SystemExit(0)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("ready=true\n")
           content = manifest.read_text()
           repository = os.environ["IMAGE_URI"]
           lines = content.splitlines()
@@ -75,6 +82,7 @@ jobs:
           manifest.write_text("\n".join(lines) + "\n")
           PY
       - uses: peter-evans/create-pull-request@v7
+        if: steps.gitops.outputs.ready == 'true'
         with:
           token: ${{ secrets.GITOPS_PR_TOKEN }}
           branch: deploy/dev-image

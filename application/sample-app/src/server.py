@@ -1,4 +1,4 @@
-"""WSGI game application. Production runs behind an HTTPS ALB with WAF."""
+"""WSGI game application. Production uses CloudFront HTTPS/WAF and a private ALB."""
 import base64
 from datetime import timedelta
 from decimal import Decimal

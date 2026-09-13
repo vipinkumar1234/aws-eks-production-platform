@@ -1,133 +1,204 @@
-# Deploy the application on EKS with Karpenter
+# Deploy ArenaGrid on EKS without buying a domain
 
-Run commands from the repository root using Bash/WSL unless noted. Python scripts also work directly in PowerShell. Install Python 3.12, Terraform 1.14.0, AWS CLI v2, kubectl compatible with EKS 1.34, Helm and Docker. Install Python dependencies with `python -m pip install -r application/sample-app/requirements.txt`. Authenticate to your chosen AWS account (for example `aws sso login --profile YOUR_PROFILE`, then export `AWS_PROFILE`).
+The application uses `https://<generated-id>.cloudfront.net`. No registered domain, Route 53 hosted zone, DNS record or custom ACM certificate is needed. Terraform creates CloudFront and an internal ALB before Kubernetes bootstrap, so Cognito callback/logout URLs are configured automatically in the same apply.
 
-## 1. Supply account-specific inputs
+Traffic: browser HTTPS -> CloudFront + WAF -> VPC origin -> private HTTP ALB -> application pods. TLS terminates at CloudFront; the origin hop is HTTP inside the VPC, restricted by security groups. This is not end-to-end TLS. EKS API access remains private by default. AWS infrastructure and CloudFront usage are billable even though no domain purchase is required.
 
-Copy `terraform/environments/dev/terraform.tfvars.example` to `terraform.tfvars` in the same directory. Replace the administrator IAM role, real domain, public Route 53 zone, GitHub OIDC subject, `owner`, `cost_center`, and `karpenter_ami_id`. See the production checklist below before applying. The domain must belong to that zone. Dev is ap-southeast-1; prod is us-east-1. Use separate bucket names and state roots. If deploying both in one account, set the second environment's `github_oidc_provider_arn` to the existing account-level provider ARN.
+## 1. One-time AWS trust setup for your existing role
 
-The EKS endpoint is private by default. Run kubectl/Helm from a host connected to the VPC, or explicitly set `cluster_endpoint_public_access_cidrs` to your administrator's public `/32`. Do not use `0.0.0.0/0`. AWS account IDs, domain ownership and credentials are intentionally not guessed.
+The workflow is configured for account **001495086648**, role **AutomationAdminAll**, repository **vipinkumar1234/aws-eks-production-platform**. The role ARN is not a credential and is committed directly in the workflow. No AWS access keys are stored in GitHub.
 
-## 2. Create state storage, then initialize
+Create GitHub environments **dev** and **prod** in repository Settings -> Environments. Restrict both to the **main** branch; require reviewers for prod. Anyone able to run trusted deployment code can use this role's permissions, so protect main and these environments.
+
+Push the updated files to main. Then, once, from AWS CloudShell or a workstation already authenticated as an administrator in account 001495086648, run from this repository:
 
 ```bash
+python3 -m pip install boto3==1.43.89
+python3 scripts/setup_github_oidc.py
+```
+
+If the repository is not present in CloudShell, clone `https://github.com/vipinkumar1234/aws-eks-production-platform.git` first and change into its directory. Private repositories require your normal GitHub authentication.
+
+The script checks the account and existing role, creates/reuses GitHub's OIDC provider, and merges exact dev/prod environment trust into AutomationAdminAll without replacing its other trust statements. Re-running it does not add duplicate statements. It does not attach IAM permissions. The invoking identity needs IAM GetRole, GetOpenIDConnectProvider, CreateOpenIDConnectProvider, AddClientIDToOpenIDConnectProvider and UpdateAssumeRolePolicy as needed, plus STS identity access.
+
+This initial authorization cannot be performed by a GitHub workflow that AWS does not yet trust. If the provider and exact environment trust already exist, skip the script. [GitHub's AWS OIDC documentation](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws) explains the audience and environment subject requirements.
+
+AutomationAdminAll must have permission to provision the resources in this repository, including IAM/PassRole/service-linked roles, VPC/EC2/ELB, EKS, S3, ECR, KMS, Secrets Manager, Cognito, DynamoDB, CloudWatch, SSM parameter reads, WAF and CloudFront. Its name alone does not prove these policies are attached. No role permissions have been inspected or changed by this repository update.
+
+## 2. Defaults: no required infrastructure secrets or variables
+
+After trust setup, dispatch the Terraform workflow using its built-in defaults:
+
+| Setting | Automatic value |
+|---|---|
+| Deployment and EKS administrator role | `arn:aws:iam::001495086648:role/AutomationAdminAll` |
+| Account | `001495086648`; authentication and preflight reject another account |
+| Dev region | `ap-southeast-1` |
+| Prod region | `us-east-1` |
+| Dev state bucket | `eks-platform-001495086648-ap-southeast-1-dev-tfstate` |
+| Prod state bucket | `eks-platform-001495086648-us-east-1-prod-tfstate` |
+| GitHub OIDC provider | Existing account-level provider created/reused in step 1 |
+| Image-role trust subject | Current repository and selected GitHub environment |
+| Owner / cost centre | `vipin` / `gaming-test` |
+| Karpenter AMI | Regional Amazon AL2023 x86_64 EKS 1.34 recommendation resolved through SSM |
+| Game URL | AWS-generated `https://<id>.cloudfront.net` |
+
+The role, provider, administrator list and GitHub trust subject no longer need to be copied into secrets/variables. `AWS_TERRAFORM_ROLE_ARN`, `ADMIN_ROLE_ARNS`, `GITHUB_OIDC_SUBJECTS`, `OWNER` and `COST_CENTER` are no longer read individually by this workflow.
+
+Optional GitHub environment settings:
+
+- Secret `TF_STATE_BUCKET`: retain your existing bucket if this environment was deployed previously. Do not change backend names for an existing deployment without explicitly migrating state.
+- Variable `KARPENTER_AMI_ID`: pin a reviewed regional AMI; otherwise each run resolves the current SSM recommendation. A later apply may select a newer AMI than an earlier plan run.
+- Variable `TFVARS_JSON`: reviewed Terraform overrides, for example `{"owner":"vipin","cost_center":"gaming-test","karpenter_cpu_limit":16}`. These override defaults; a pinned AMI in this JSON takes precedence over KARPENTER_AMI_ID. The workflow rejects region mismatches.
+- Variable `DNS_ZONE_NAME`: optional zone creation, described below.
+
+The project still includes two system nodes plus Karpenter workloads. EC2, EKS, NAT, CloudFront and other AWS usage is billable. An AMI lookup chooses an official image, not a workload-tested image; pin it after dev verification.
+
+## 3. Test URL and optional automatic Route 53 zone
+
+For testing, leave `DNS_ZONE_NAME` unset. CloudFront supplies the hostname and HTTPS certificate; no domain registration, hosted zone, delegation or certificate-validation action is required. [AWS documents its generated CloudFront domain and default certificate](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/DownloadDistValuesGeneral.html).
+
+If you also want a Route 53 public zone, set the GitHub environment variable `DNS_ZONE_NAME` to a domain you control, then dispatch apply. Terraform creates the zone and outputs its ID and name servers automatically; there is no ROUTE53_ZONE_ID input. Alternatively supply `dns_zone_name` through TFVARS_JSON. Keep the setting stable: the zone has prevent_destroy, so removing/changing it will stop a plan that would delete it.
+
+Creating a zone does **not** register a domain, delegate its name servers, or attach a custom hostname to CloudFront. The game continues using the generated HTTPS test URL. A custom hostname additionally requires registrar delegation, ACM validation and distribution alias configuration; those are not claimed as automated by the optional zone resource. Arbitrary domain names cannot be used as owned HTTPS domains. For this test deployment, skip the unused zone and its cost.
+
+## 4. Deploy infrastructure with GitHub Actions
+
+Run Actions -> **terraform** -> Run workflow -> **main**, **dev**, **plan**. Review the result. Then dispatch **apply**. The apply run calculates and applies a fresh plan, so review changes between runs and enforce your environment approval policy.
+
+The bootstrap creates/secures the state bucket before init: ownership checks, public-access block, owner-enforced ownership, versioning, naming tags, encryption preservation and deny-insecure-transport policy. Its role needs S3 bucket configuration/read permissions including GetBucketTagging/PutBucketTagging, plus state-object GetObject/PutObject and lock-object GetObject/PutObject/DeleteObject. Existing KMS-encrypted state buckets also require key permissions. There is no DynamoDB state-lock table; Terraform uses the native S3 `.tflock`. Never delete the bucket during normal cleanup.
+
+Terraform creates the private ALB/listener/target group, CloudFront VPC origin/distribution, CloudFront-scoped WAF, EKS, data/auth resources and Karpenter AWS resources. CloudFront deployment can take several minutes. The workflow summary displays **app_url**, **github_actions_role_arn** and **ecr_repository_url**. The URL can return 503 until application pods are registered; this is expected before steps 5-8.
+
+Terraform computes Cognito URLs from the CloudFront domain: `https://<id>.cloudfront.net/auth/callback` and `https://<id>.cloudfront.net/`. Distribution recreation changes that address and requires rendering/redeploying the workload configuration.
+
+## 5. Publish the application image
+
+After apply, add to GitHub dev:
+
+| Type | Name | Value |
+|---|---|---|
+| Secret | AWS_APP_ROLE_ARN | Terraform output `github_actions_role_arn` |
+| Variable | ECR_REPOSITORY | Repository name, e.g. `eks-platform-apse1-dev-sample-app`, not the full registry URL |
+| Secret | GITOPS_PR_TOKEN | Repository-scoped token with contents and pull-request write permissions, needed for subsequent image PRs |
+
+Run Actions -> **application** on main. It tests/scans and pushes the image. For the first deployment it succeeds after publishing and explains that the GitOps tree must be rendered; it does not try to create an image PR for a missing tree. Once the tree exists, the workflow creates an image update PR, which must be reviewed/merged for Argo CD to deploy.
+
+Images use immutable Git commit tags. Do not rerun a successful image push for the same commit; use the already published digest, or commit an actual image change before building again. Copy the initial `IMAGE_URI` from the workflow summary or resolve it with the command in step 6.
+
+## 6. Prepare a bootstrap host and render GitOps
+
+You need a workstation or administration host with network access to the EKS API (VPC-connected VPN/host), using an administrator role from ADMIN_ROLE_ARNS. The repository does not create an administration host or VPN. Alternatively, explicitly allow only your administrator's public `/32` through `cluster_endpoint_public_access_cidrs` in Terraform; never use `0.0.0.0/0`. A GitHub-hosted runner can provision AWS infrastructure but cannot reach the default private Kubernetes endpoint.
+
+Install Python 3.12, Terraform 1.14.0, AWS CLI v2, Helm and kubectl compatible with EKS 1.34. Commands below use Bash/WSL from the repository root. Python scripts also work from PowerShell. Authenticate to the correct AWS account, for example with AWS SSO and your selected AWS_PROFILE.
+
+```bash
+python -m pip install boto3==1.43.89 PyYAML==6.0.2 jsonschema==4.26.0
 export ENVIRONMENT=dev
+export REGION=ap-southeast-1
+export TF_STATE_BUCKET_DEV=YOUR_STATE_BUCKET
+# Match the ownership tags used by CI.
 export TF_VAR_project=eks-platform
 export TF_VAR_owner=platform-team
 export TF_VAR_cost_center=engineering
-export TF_STATE_BUCKET_DEV=YOUR-GLOBALLY-UNIQUE-DEV-STATE-BUCKET
 python scripts/terraform_init.py --environment dev
-terraform -chdir=terraform/environments/dev plan -lock-timeout=5m -out=tfplan
-terraform -chdir=terraform/environments/dev apply -lock-timeout=5m tfplan
-```
 
-`terraform_init.py` calls the AWS SDK first: verify account ownership, create a missing bucket, wait for existence, verify region, merge naming/ownership tags, block all public access, enforce bucket-owner ownership, enable versioning, preserve existing encryption (or enable AES256), and merge a deny-insecure-transport policy. Any failure stops before init. It then initializes with `use_lockfile=true` and `encrypt=true`. It never creates a DynamoDB lock table. A normal re-run preserves objects and existing policy statements. Use a dedicated state bucket because bootstrap hardens bucket-level access settings.
-
-The bootstrap principal needs `sts:GetCallerIdentity`, S3 bucket creation/configuration/read permissions (including `s3:GetBucketTagging` and `s3:PutBucketTagging`) on the named bucket, `s3:ListBucket`, and object access. Terraform needs `s3:GetObject`/`s3:PutObject` on `eks/dev/terraform.tfstate`, plus `s3:GetObject`/`s3:PutObject`/`s3:DeleteObject` on `eks/dev/terraform.tfstate.tflock`. Existing KMS-encrypted buckets also require key permissions. State includes sensitive session-key material; only infrastructure administrators/CI should access it. No lifecycle rule expires state versions. Retain the bucket after cluster destruction.
-
-Native locking details: [HashiCorp S3 backend documentation](https://developer.hashicorp.com/terraform/language/backend/s3). Backend-free `init -backend=false` used for validation does not access state and needs no bucket.
-
-`ENVIRONMENT=dev bash scripts/bootstrap.sh` combines bootstrap, plan, apply and kubeconfig. Review your variables before using it. For prod, set `TF_STATE_BUCKET_PROD` and `ENVIRONMENT=prod`.
-
-## 3. Build and push the image
-
-```bash
-export REGION=ap-southeast-1
-export ECR_URL=$(terraform -chdir=terraform/environments/dev output -raw ecr_repository_url)
-aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "${ECR_URL%%/*}"
-export IMAGE_TAG=$(git rev-parse HEAD)
-docker build --platform linux/amd64 -t "$ECR_URL:$IMAGE_TAG" application/sample-app
-# Run your image scan before pushing/deploying; CI runs Trivy with HIGH/CRITICAL gating.
-docker push "$ECR_URL:$IMAGE_TAG"
-export IMAGE_URI="$ECR_URL@$(aws ecr describe-images --region "$REGION" --repository-name "${ECR_URL#*/}" --image-ids imageTag="$IMAGE_TAG" --query 'imageDetails[0].imageDigest' --output text)"
-```
-
-Use a new tag for a changed image; ECR tags are immutable. `application.yml` runs tests, scans, publishes and opens a dev image PR. The first image is published even if the rendered tree is not yet available; use that digest for the next step.
-
-## 4. Render and deploy GitOps
-
-```bash
 export GITOPS_REPO_URL=https://github.com/YOUR_ORG/YOUR_REPO.git
+export ECR_URL=$(terraform -chdir=terraform/environments/dev output -raw ecr_repository_url)
+# Set the exact commit SHA built by the application workflow, not a later GitOps commit.
+export IMAGE_TAG=YOUR_BUILT_COMMIT_SHA
+export IMAGE_DIGEST=$(aws ecr describe-images --region "$REGION" \
+  --repository-name "${ECR_URL#*/}" --image-ids imageTag="$IMAGE_TAG" \
+  --query 'imageDetails[0].imageDigest' --output text)
+export IMAGE_URI="$ECR_URL@$IMAGE_DIGEST"
 python scripts/render_gitops.py --environment dev
 ```
 
-Review and commit `gitops/environments/dev` to main. The renderer requires an ECR SHA256 digest, resolves all Terraform outputs, and leaves shared templates untouched. If upgrading an already-rendered tree, remove obsolete cert-manager/Prometheus files from that tree and review Argo CD deletion plans before syncing; this repository change does not remove live cloud resources itself.
+Review, commit and merge **gitops/environments/dev** to main before bootstrapping Argo CD. Terraform outputs supply the generated app address and target group ARN; no manual URL editing is needed. If you also plan/apply locally, copy that environment's terraform.tfvars.example to terraform.tfvars and fill the same inputs used by CI. Merely initializing/reading existing state does not require supplying all plan inputs.
 
-Before installing Argo CD, bootstrap the pinned Karpenter CRDs and controller from a host that can reach the EKS API. It uses EKS Pod Identity and runs two controller replicas on the managed system nodes. Helm owns the controller/CRDs; Argo CD owns the NodePool and EC2NodeClass. Do not give both tools ownership of the same objects.
+## 7. Bootstrap Karpenter and Argo CD
 
 ```bash
 python scripts/bootstrap_karpenter.py --environment dev
-```
-
-For an existing Karpenter installation, review CRD ownership and the release upgrade notes before running the script; it does not automatically take over CRDs owned by a different release.
-
-```bash
-aws eks update-kubeconfig --region "$REGION" --name "$(terraform -chdir=terraform/environments/dev output -raw cluster_name)"
-# Pinned Argo CD chart; keep the server ClusterIP-only.
-export ARGOCD_CHART_VERSION=10.8.2
+aws eks update-kubeconfig --region "$REGION" \
+  --name "$(terraform -chdir=terraform/environments/dev output -raw cluster_name)"
 helm repo add argo https://argoproj.github.io/argo-helm
 helm repo update
-helm upgrade --install argocd argo/argo-cd --version "$ARGOCD_CHART_VERSION" --namespace argocd --create-namespace -f gitops/argocd/values.yaml --wait --timeout 10m
+helm upgrade --install argocd argo/argo-cd --version 10.8.2 \
+  --namespace argocd --create-namespace \
+  -f gitops/environments/dev/argocd/values.yaml --wait --timeout 10m
+```
+
+For a private GitHub repository, configure Argo CD repository credentials before applying root applications. Use a read-only deploy key or appropriate repository credential secret and do not commit the credentials. Argo CD remains private; administer it with `kubectl -n argocd port-forward svc/argocd-server 8443:443`.
+
+```bash
 kubectl apply -f gitops/environments/dev/argocd/projects/platform-project.yaml
 kubectl apply -f gitops/environments/dev/argocd/bootstrap/namespace.yaml
+kubectl -n argocd get applications
+```
+
+Wait for platform applications to sync. The load balancer controller installs the TargetGroupBinding CRD/webhook. Argo may retry the game sync until these exist. A TargetGroupBinding registers Service pod IPs with Terraform's target group; it does not create another ALB. Terraform owns all relevant security-group rules. Do not manually create an Ingress or LoadBalancer Service for this app.
+
+## 8. Verify the application
+
+Run after Argo creates the resources; a `NotFound` means check Argo sync and retry rather than assume success:
+
+```bash
+kubectl -n platform-system rollout status deployment/aws-load-balancer-controller --timeout=10m
+kubectl wait --for=condition=Established crd/targetgroupbindings.elbv2.k8s.aws --timeout=5m
+kubectl apply --dry-run=server -f gitops/environments/dev/apps/sample-app/targetgroupbinding.yaml
 kubectl apply --dry-run=server -f gitops/environments/dev/platform/karpenter-resources/nodepool.yaml
 kubectl wait --for=condition=Ready ec2nodeclass --all --timeout=5m
 kubectl wait --for=condition=Ready nodepool --all --timeout=5m
 kubectl -n sample-app rollout status deployment/sample-app --timeout=10m
-kubectl -n sample-app get ingress sample-app
+kubectl -n sample-app get targetgroupbinding,pods,hpa,pdb
+aws elbv2 describe-target-health --region "$REGION" \
+  --target-group-arn "$(terraform -chdir=terraform/environments/dev output -raw app_target_group_arn)"
+export APP_URL=$(terraform -chdir=terraform/environments/dev output -raw app_url)
+curl --fail "$APP_URL/healthz"
+curl --fail "$APP_URL/readyz"
+echo "$APP_URL"
 ```
 
-Argo CD chart [10.8.2](https://github.com/argoproj/argo-helm/releases/tag/argo-cd-10.8.2) is pinned; review upgrades explicitly. For private Git repositories, configure Argo CD repository credentials first using its documented secret format; never commit credentials. Argo CD remains private; use `kubectl -n argocd port-forward svc/argocd-server 8443:443` for administration.
+Open APP_URL in your browser. Sign up, verify email, log in, play solo, invite another signed-in player and log out. Verify responses say `Cache-Control: no-store`, authenticated responses are not edge-cached, API POSTs work and HTTP redirects to HTTPS. Test a rolling restart. The private ALB should be unreachable from the public internet and reject VPC callers outside CloudFront's service security group. Keep using the CloudFront address; the ALB address is not an alternative login URL.
 
-Create a Route 53 alias A record for your app domain pointing to the ALB shown by the ingress. ACM validation records are created by Terraform; the application alias is added after ALB provisioning. Visit the HTTPS domain, sign up, verify email, create a solo game, then test a friend invite in another signed-in browser. Check `/healthz`, `/readyz`, S3 log delivery and rolling restart behavior. These live checks require your AWS account and DNS.
+Troubleshooting: 503 commonly means targets aren't registered/healthy; check TargetGroupBinding events, controller logs, app readiness and port 8080 rules. 502/504 suggests origin connectivity or app failure; check VPC origin status and ALB ingress from the AWS-managed CloudFront SG. Login redirect mismatch means the rendered app URL and Cognito callback differ. 403 can mean WAF rules or an invalid Origin header; inspect WAF metrics and the browser request without disabling protection globally. Namespace NetworkPolicies permit VPC ingress to the application and AWS HTTPS egress.
 
-## CI configuration
+## 9. Validate scaling and production readiness
 
-Create GitHub environments `dev` and optionally `prod`. Restrict prod to main and enable required reviewers. Each environment needs secrets `AWS_TERRAFORM_ROLE_ARN` and `TF_STATE_BUCKET`; variables `APP_DOMAIN`, `ROUTE53_ZONE_ID`, `ADMIN_ROLE_ARNS` (JSON array), `GITHUB_OIDC_SUBJECTS` (JSON array), `OWNER`, `COST_CENTER`, `KARPENTER_AMI_ID`, and optionally `TFVARS_JSON`. Create the initial Terraform OIDC deployment role out of band with a trust policy scoped to this repository/environment; it cannot bootstrap its own credentials. Terraform creates a separate ECR-only role for application builds.
-
-For the application workflow, dev also needs `AWS_APP_ROLE_ARN` (Terraform's `github_actions_role_arn` output), `ECR_REPOSITORY` (repository name, not full URL), and `GITOPS_PR_TOKEN` scoped to creating deployment PRs. Infrastructure CI validates PRs without cloud credentials. Manually dispatch `terraform` on main with action `plan` or `apply`; it creates the backend before init. No automatic production deployment occurs on push.
-
-## Existing infrastructure and cleanup
-
-Review `terraform plan` carefully before adopting this simplified layout: interface endpoints and a third AZ were removed in the earlier layout; this revision adds Karpenter and changes managed node sizing/names; subnet/NAT/node changes can disrupt an existing cluster. The Cognito client changes from ALB authentication to application PKCE login, so users must sign in again. Back up state and game data and drain old nodes before removing their capacity.
-
-For cleanup, first remove application ingresses through Argo CD and wait for ALB deletion; otherwise controller-managed load balancers can block VPC destruction. Stop Argo reconciliation. Drain and delete Karpenter workload nodes/NodeClaims while its controller, IAM role, interruption queue and VPC still exist; confirm the EC2 instances terminate before removing Karpenter. Disable DynamoDB deletion protection only when intentionally deleting game data, and review a `terraform plan -destroy`. Log buckets intentionally require manual retention/emptying decisions. Initialize teardown using `python scripts/terraform_init.py --environment dev --check-only`; this never recreates a missing backend bucket. Never delete the state bucket as part of normal environment cleanup.
-
-## Production deployment checklist
-
-1. **Use separate AWS accounts/state for dev and prod where possible.** In GitHub create the target environment, protect `main`, and require reviewers for prod. Create the initial Terraform OIDC role outside this stack. Scope trust to `repo:ORG/REPO:environment:dev` or `prod`. Give that role the infrastructure provisioning permissions, including Karpenter IAM roles/policies, `iam:PassRole`, EKS access entries/Pod Identity, SQS and EventBridge. The ECR-only app role cannot provision infrastructure.
-2. **Choose names once.** Read [AWS naming and tagging](docs/aws-naming.md). Provide `OWNER` and `COST_CENTER` environment variables and the same values in local tfvars. `TFVARS_JSON` can set `project`, `region_short_name`, `github_oidc_provider_arn`, and `karpenter_cpu_limit`. Do not put credentials in it. GitHub environment variables explicitly mapped to `TF_VAR_*` must be populated; do not rely on empty values being replaced by Terraform defaults.
-3. **Pin an AMI per region.** Discover the current AWS image with the command below, test it in dev, then set `KARPENTER_AMI_ID` in GitHub and `karpenter_ami_id` in local tfvars. Terraform verifies Amazon ownership, x86_64 architecture and the EKS 1.34 AL2023 image family. Production should promote a tested release, not follow `latest` automatically. The AMI is regional; do not reuse a Singapore AMI ID in Virginia.
-4. **Check capacity and network prerequisites.** Verify On-Demand EC2 vCPU quota, available subnet IPs, and supported c/m/r generation 6+ x86 instance types in both AZs. Keep NAT/HTTPS access for EC2, EKS, SSM, STS, SQS, ECR and public chart registries; the private API does not mean the VPC is air-gapped. Prod has one NAT per AZ. Ensure the bootstrap IAM role is in `ADMIN_ROLE_ARNS`, and run Helm/kubectl on a VPC-connected host or through a restricted public endpoint. GitHub-hosted Terraform runs only AWS APIs; it does not bootstrap Kubernetes over the private endpoint.
-5. **Run `terraform` plan, review replacements, then apply on main.** Defaults are two `m6i.large` managed system nodes plus Karpenter workload nodes. The workload pool is capped at 32 vCPU in dev and 128 in prod; these limits exclude managed nodes and are eventually consistent, not hard billing caps. Configure AWS Budgets and quota alerts separately.
-6. **Publish the app image.** Configure dev secret `AWS_APP_ROLE_ARN`, variable `ECR_REPOSITORY`, and secret `GITOPS_PR_TOKEN`. Run `application`. On the initial deployment it pushes the image and intentionally stops when the rendered tree is absent. Resolve the digest from ECR, set `IMAGE_URI`, render, review and commit the environment tree. Subsequent image PRs must be merged for Argo CD to deploy. The current application workflow targets dev only: for prod, copy/promote the tested image to the prod ECR repository, use its digest when rendering prod, and review/merge the prod manifest change. Do not assume the dev build deploys prod.
-7. **Bootstrap in order.** Render GitOps, run `bootstrap_karpenter.py`, install Argo CD, configure repository credentials if private, then apply the AppProject/root applications. If a `kubectl wait` reports no resources yet, wait for Argo CD to create them, inspect its sync status and retry. NodePool pruning is deliberately disabled to prevent an accidental Git deletion terminating workload capacity; remove pools through a reviewed drain procedure.
-8. **Complete ingress/DNS and test the service.** Wait for healthy ALB targets and the ACM certificate, create the Route 53 alias for `APP_DOMAIN`, then test HTTPS, login/email delivery, `/healthz`, `/readyz`, a game across two sessions and a rolling restart. Do not use the ALB hostname as the application's login URL: Cognito callbacks and host routing use your configured domain.
-9. **Prove scaling and recovery in dev before promotion.** Use the checks below. Establish application SLOs and paging for pending pods, unavailable replicas, Karpenter errors, node readiness, ALB 5xx/latency and exhausted pool capacity. Add metrics collection for Karpenter; this repository does not install a Prometheus backend or a paging destination. Test DynamoDB restore, node failure and credential rotation. Review Cognito MFA/email quotas and production email delivery.
+Karpenter 1.12.0 runs two controllers on the managed system group. The workload pool uses On-Demand c/m/r generation 6+ amd64 capacity. It batches pending pods and consolidates underused nodes after five minutes, with at most one voluntary disruption at a time. EKS retains its default scheduler; this is Karpenter bin packing/consolidation. The HPA scales two to four game replicas. Accurate resource requests are necessary; load-test the initial 50m CPU / 64Mi memory requests.
 
 ```bash
-# Discover a candidate AMI, then test and record the exact ID in configuration.
-aws ssm get-parameter --region ap-southeast-1 \
-  --name /aws/service/eks/optimized-ami/1.34/amazon-linux-2023/x86_64/standard/recommended/image_id \
-  --query Parameter.Value --output text
-
-kubectl -n kube-system get pods -l app.kubernetes.io/name=karpenter -o wide
-kubectl get ec2nodeclasses,nodepools,nodeclaims
-kubectl get nodes -L workload-tier,karpenter.sh/nodepool,karpenter.sh/capacity-type,topology.kubernetes.io/zone
-kubectl -n sample-app get pods -o wide
-kubectl -n sample-app get hpa,pdb
+kubectl get nodepools,nodeclaims,ec2nodeclasses
+kubectl get nodes -L workload-tier,karpenter.sh/nodepool,topology.kubernetes.io/zone
 kubectl -n kube-system logs deployment/karpenter --all-pods=true --tail=100
 kubectl top nodes
 ```
 
-For a controlled scale-out test, add a temporary dev Deployment to Git with `nodeSelector: {workload-tier: application}` and CPU/memory requests large enough to exceed the current workload nodes, but below the NodePool limit. Use an approved image. Confirm pending pods cause new NodeClaims, nodes join Ready and pods become Running; then remove the test Deployment through Git and observe consolidation after at least five minutes. Do not scale the game manually while its HPA owns the replica count. Delete only the temporary test workload, not the pool or controller. A PodDisruptionBudget or topology constraint can legitimately prevent further consolidation.
+For a dev scale test, deploy a temporary approved workload with `nodeSelector: {workload-tier: application}` and sufficient resource requests to require more nodes, staying within the CPU cap. Verify NodeClaims become Ready and pods run. Remove that workload and observe eligible node consolidation. Do not manually scale the game against its HPA. Two-AZ spreading/PDBs can legitimately prevent consolidation; strict spreading can leave replicas Pending during an AZ outage. Karpenter does not resize system nodes.
 
-## How bin packing works here
+Node expiration is disabled; rotate tested AMI pins through Terraform and GitOps regularly and verify drift replacement. Before enabling Spot, verify the account's EC2 Spot service-linked role and test interruptions; they are not prevented by voluntary disruption budgets. No guaranteed On-Demand share is provided by a mixed pool.
 
-Karpenter batches unschedulable pods, evaluates their resource requests and scheduling constraints, and selects suitable instance capacity. `WhenEmptyOrUnderutilized` consolidation can remove or replace underused nodes after a five-minute delay, with at most one voluntary node disruption at a time. This is Karpenter provisioning/consolidation, not a custom Kubernetes `MostAllocated` scheduler configuration. EKS retains its default scheduler. Accurate requests are essential; measure the application's 50m CPU/64Mi memory defaults under real load and tune them before production.
+Before serving production users, configure paging/SLOs, quota and cost alerts, Karpenter metrics collection, DynamoDB restore drills, Cognito email/MFA policy, dependency patching and load/recovery tests. Existing Fluent Bit/S3 and EKS/VPC logs remain. This stack does not configure CloudFront/ALB access-log delivery, a metrics backend or paging destination. Default CloudFront certificate TLS policy is AWS-controlled; a custom minimum TLS policy/end-to-end TLS would require a different certificate architecture.
 
-The app is restricted to the workload pool and must span at least two AZs. This intentionally leaves an availability floor rather than packing all replicas onto one node. It also means an AZ outage can leave some replicas Pending until capacity in that AZ returns; test whether this strict policy matches your recovery objectives. Existing replicas in the surviving AZ can continue serving. The managed system pool stays at two nodes; Karpenter does not resize it. Watch its capacity as platform controllers grow.
+## 10. Production promotion
 
-The default workload pool uses On-Demand only. To permit Spot, review the NodePool capacity requirement and allow `spot` alongside `on-demand` in dev first. Verify/create the account-level EC2 Spot service-linked role before doing so. The interruption queue/EventBridge wiring is already included, but interruptions can exceed voluntary disruption budgets and are not prevented by a PDB. A mixed pool does not guarantee a minimum On-Demand share.
+Repeat with GitHub environment prod, prod account/roles, separate bucket, prod AMI and region us-east-1. Require production reviewers. The application workflow currently builds dev only: promote a tested image into prod ECR, render prod using its immutable digest, review/merge that tree, then bootstrap prod from its authorized host. Do not reuse the dev ECR URL or regional AMI. Run all live checks again.
 
-Node expiration is disabled to avoid unplanned age-based drains. Roll out tested AMI pins regularly through Terraform output/rendered GitOps; Karpenter drift replacement uses the disruption budget and respects PDBs. Monitor for blocked drains so nodes do not remain unpatched. Review the [Karpenter compatibility matrix](https://karpenter.sh/docs/upgrading/compatibility/), [NodePool disruption settings](https://karpenter.sh/v1.12/concepts/nodepools/) and [AMI management](https://karpenter.sh/v1.12/tasks/managing-amis/) for upgrades. Controller and CRD chart versions are pinned together to 1.12.0 in `scripts/bootstrap_karpenter.py`; the AWS IAM submodule is pinned to 21.25.0.
+## Existing installations and cleanup
+
+Do not apply this change blindly to a running domain-based deployment. The old ACM resources leave the active Terraform graph, WAF changes from REGIONAL to CLOUDFRONT in us-east-1, and supported AZ selection can change subnet/node placement. These can destroy/replace resources. Back up state/data, review the full plan and use a staged migration or a new environment if continuity matters. Existing external Route 53 aliases are not removed automatically.
+
+The new ALB uses the distinct `-edge` name to avoid colliding with the old controller-owned `-app` ALB. Rendering removes only the obsolete generated `apps/sample-app/ingress.yaml`. Review that deletion: Argo pruning the old Ingress deletes its ALB. Remove obsolete copies from any other GitOps paths before enabling reconciliation. The TargetGroupBinding may not coexist with the old ingress-based deployment as a seamless cutover without a deliberate migration plan.
+
+For cleanup, remove the app TargetGroupBinding through Git/Argo and wait for pod deregistration while the controller still runs. Drain/delete Karpenter NodeClaims and confirm EC2 termination while its controller/IAM/VPC remain. Stop Argo reconciliation, initialize with `python scripts/terraform_init.py --environment dev --check-only`, and review a Terraform destroy plan. Terraform removes CloudFront before its VPC origin/private ALB and then networking; AWS-managed VPC-origin ENIs may take time to disappear. Disable DynamoDB deletion protection only when intentionally deleting data. Retain state and decide log retention explicitly. Never delete the state bucket as part of normal cleanup.
+
+## Validation and references
+
+CI runs Terraform validation, mocked edge tests, YAML checks, official Karpenter/TargetGroupBinding schema checks and security gates. Locally use `python -m unittest discover -s scripts -p 'test_*.py' -v`, `python scripts/validate_yaml.py`, `python scripts/validate_karpenter.py`, and `python scripts/validate_targetgroupbinding.py`. Schema checks download pinned upstream CRDs; Kubernetes server-side dry-run is still required for webhook/CEL checks. Tests do not prove AWS quota, IAM or live networking readiness.
+
+- [AWS CloudFront VPC origins, security groups and supported AZs](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-vpc-origins.html)
+- [CloudFront default HTTPS certificate](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/DownloadDistValuesGeneral.html)
+- [AWS Load Balancer Controller TargetGroupBinding](https://kubernetes-sigs.github.io/aws-load-balancer-controller/v2.13/guide/targetgroupbinding/targetgroupbinding/)
+- [Karpenter compatibility](https://karpenter.sh/docs/upgrading/compatibility/)
+- [S3 Terraform native locking](https://developer.hashicorp.com/terraform/language/backend/s3)

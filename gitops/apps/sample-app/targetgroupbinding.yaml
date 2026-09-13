@@ -1,0 +1,14 @@
+# Terraform owns the ALB/listener/target group and security groups.
+# The controller only registers/deregisters Service pod IPs.
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: sample-app
+  namespace: sample-app
+spec:
+  targetGroupARN: REPLACE_WITH_APP_TARGET_GROUP_ARN
+  targetType: ip
+  vpcID: REPLACE_WITH_TERRAFORM_VPC_ID
+  serviceRef:
+    name: sample-app
+    port: 80
