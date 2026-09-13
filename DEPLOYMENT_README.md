@@ -10,14 +10,30 @@ The workflow is configured for account **001495086648**, role **AutomationAdminA
 
 Create GitHub environments **dev** and **prod** in repository Settings -> Environments. Restrict both to the **main** branch; require reviewers for prod. Anyone able to run trusted deployment code can use this role's permissions, so protect main and these environments.
 
-Push the updated files to main. Then, once, from AWS CloudShell or a workstation already authenticated as an administrator in account 001495086648, run from this repository:
+Push the updated files to main. Use the normal AWS CloudShell user, authenticated as an administrator in account 001495086648. Do not run `sudo su -`: it changes the home directory and Python environment. If your prompt currently starts with `[root@`, run `exit` once to return to the CloudShell user. For a fresh checkout:
 
 ```bash
-python3 -m pip install boto3==1.43.89
+cd ~
+git clone https://github.com/vipinkumar1234/aws-eks-production-platform.git
+cd aws-eks-production-platform
+aws sts get-caller-identity
+test -f scripts/setup_github_oidc.py || { echo "Push the setup script to GitHub main first"; exit 1; }
+python3 -c 'import boto3; print("Boto3 available:", boto3.__version__)'
 python3 scripts/setup_github_oidc.py
 ```
 
-If the repository is not present in CloudShell, clone `https://github.com/vipinkumar1234/aws-eks-production-platform.git` first and change into its directory. Private repositories require your normal GitHub authentication.
+If you already cloned the repository, use `cd ~/aws-eks-production-platform` and `git pull --ff-only origin main` instead of cloning again; keep your local changes and resolve any Git conflict before proceeding. Private repositories require your normal GitHub authentication. Check that STS reports account `001495086648` before running setup.
+
+CloudShell normally includes Boto3 and pip, so no package installation is needed when the import check succeeds. If Boto3 is missing, run these commands as the normal CloudShell user, then retry the setup script:
+
+```bash
+# Install the Python package manager only if python3 -m pip --version fails.
+sudo dnf install -y python3-pip
+python3 -m pip install --user boto3==1.43.89
+python3 scripts/setup_github_oidc.py
+```
+
+`can't open file '/root/scripts/setup_github_oidc.py'` means Python was launched from `/root`, not the repository directory. Installing pip will not fix that path error. The setup file must also have been committed and pushed from your local workspace before CloudShell can clone it.
 
 The script checks the account and existing role, creates/reuses GitHub's OIDC provider, and merges exact dev/prod environment trust into AutomationAdminAll without replacing its other trust statements. Re-running it does not add duplicate statements. It does not attach IAM permissions. The invoking identity needs IAM GetRole, GetOpenIDConnectProvider, CreateOpenIDConnectProvider, AddClientIDToOpenIDConnectProvider and UpdateAssumeRolePolicy as needed, plus STS identity access.
 

@@ -1,5 +1,8 @@
 name: gitops
 on:
+  push:
+    branches: [main]
+    paths: [gitops/**, scripts/**, .github/workflows/gitops.yml]
   pull_request:
     paths: [gitops/**, scripts/**, .github/workflows/gitops.yml]
 permissions:

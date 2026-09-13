@@ -5,7 +5,10 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: [application/**]
+    paths: [application/**, .github/workflows/application.yml]
+concurrency:
+  group: application-${{ github.ref }}
+  cancel-in-progress: false
 permissions:
   contents: read
 jobs:
@@ -23,16 +26,21 @@ jobs:
       contents: write
       pull-requests: write
       id-token: write
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
     environment: dev
+    env:
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'eks-platform-apse1-dev-sample-app' }}
     steps:
       - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_APP_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_APP_ROLE_ARN || 'arn:aws:iam::001495086648:role/AutomationAdminAll' }}
+          allowed-account-ids: '001495086648'
           aws-region: ap-southeast-1
+      - name: Check infrastructure has created the image repository
+        run: aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" --query 'repositories[0].repositoryUri' --output text
       - uses: aws-actions/amazon-ecr-login@v2
         id: ecr
       - uses: docker/build-push-action@v6
@@ -40,23 +48,23 @@ jobs:
           context: application/sample-app
           push: false
           load: true
-          tags: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
-      - uses: aquasecurity/trivy-action@0.28.0
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+          image-ref: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
           severity: HIGH,CRITICAL
           exit-code: 1
       - name: Push scanned image
         run: docker push "$IMAGE"
         env:
-          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
       - name: Resolve immutable image digest
         run: |
           DIGEST=$(aws ecr describe-images --repository-name "$REPOSITORY" --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
           echo "IMAGE_URI=$REGISTRY/$REPOSITORY@$DIGEST" >> "$GITHUB_ENV"
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
-          REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          REPOSITORY: ${{ env.ECR_REPOSITORY }}
       - name: Update dev GitOps image
         id: gitops
         run: |
