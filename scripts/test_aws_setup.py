@@ -24,6 +24,7 @@ class DeploymentSetupTest(unittest.TestCase):
         self.assertEqual(values['admin_role_arns'], [ROLE, ROOT])
         self.assertIn(ACCOUNT, values['github_oidc_provider_arn'])
         self.assertEqual(values['github_oidc_subjects'], ['repo:vipinkumar1234@110930371/aws-eks-production-platform@1359084778:environment:dev'])
+        self.assertEqual(values['kubernetes_version'], '1.36')
 
     def test_custom_github_oidc_subject_uses_repository_ids(self):
         with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'vipinkumar1234/aws-eks-production-platform'}):
@@ -51,6 +52,14 @@ class DeploymentSetupTest(unittest.TestCase):
         for overrides in ([], {'aws_region': 'us-east-1'}, {'owner': 'name\nINJECT=value'}):
             with self.subTest(overrides=overrides), self.assertRaises(ValueError):
                 prepare('dev', 'org/repo', 'ap-southeast-1', overrides, 'ami-test')
+
+    def test_supported_intermediate_kubernetes_version(self):
+        values = prepare('dev', 'org/repo', 'ap-southeast-1', {}, 'ami-test', '1.35')
+        self.assertEqual(values['kubernetes_version'], '1.35')
+        with self.assertRaises(ValueError):
+            prepare('dev', 'org/repo', 'ap-southeast-1', {}, 'ami-test', '1.37')
+        with self.assertRaises(ValueError):
+            prepare('dev', 'org/repo', 'ap-southeast-1', {'kubernetes_version': '1.36'}, 'ami-test', '1.35')
 
     def test_trust_merge_preserves_existing_access_and_is_idempotent(self):
         old = {'Sid': 'ExistingAdmin', 'Effect': 'Allow', 'Principal': {'AWS': f'arn:aws:iam::{ACCOUNT}:root'}, 'Action': 'sts:AssumeRole'}

@@ -17,11 +17,15 @@ def github_oidc_subject(repository, environment, owner_id=None, repository_id=No
     return f'repo:{repository}:environment:{environment}'
 
 
-def prepare(environment, repository, region, overrides, ami):
+def prepare(environment, repository, region, overrides, ami, kubernetes_version='1.36'):
     if environment not in ('dev', 'prod'):
         raise ValueError('Unknown environment')
     if not isinstance(overrides, dict):
         raise ValueError('TFVARS_JSON must be an object')
+    if kubernetes_version not in ('1.35', '1.36'):
+        raise ValueError('KUBERNETES_VERSION must be 1.35 or 1.36')
+    if overrides.get('kubernetes_version', kubernetes_version) != kubernetes_version:
+        raise ValueError('TFVARS_JSON kubernetes_version must match the workflow Kubernetes version input')
     expected_region = 'ap-southeast-1' if environment == 'dev' else 'us-east-1'
     if region != expected_region or overrides.get('aws_region', region) != region:
         raise ValueError('Workflow region must match the environment')
@@ -35,6 +39,7 @@ def prepare(environment, repository, region, overrides, ami):
         )],
         'github_oidc_provider_arn': f'arn:aws:iam::{ACCOUNT}:oidc-provider/token.actions.githubusercontent.com',
         'karpenter_ami_id': ami,
+        'kubernetes_version': kubernetes_version,
     }
     values.update(overrides)
     for name in ('owner', 'cost_center', 'project'):
@@ -46,6 +51,9 @@ def prepare(environment, repository, region, overrides, ami):
 
 def main():
     environment, region = os.environ['ENVIRONMENT'], os.environ['REGION']
+    kubernetes_version = os.getenv('KUBERNETES_VERSION') or os.getenv('TF_VAR_kubernetes_version') or '1.36'
+    if kubernetes_version not in ('1.35', '1.36'):
+        raise SystemExit('KUBERNETES_VERSION must be 1.35 or 1.36')
     session = boto3.Session(region_name=region)
     if session.client('sts').get_caller_identity()['Account'] != ACCOUNT:
         raise SystemExit(f'Refusing to deploy outside account {ACCOUNT}')
@@ -54,8 +62,9 @@ def main():
         raise SystemExit('TFVARS_JSON must be an object')
     ami = overrides.get('karpenter_ami_id') or os.getenv('PINNED_AMI')
     if not ami:
-        ami = session.client('ssm').get_parameter(Name='/aws/service/eks/optimized-ami/1.36/amazon-linux-2023/x86_64/standard/recommended/image_id')['Parameter']['Value']
-    values = prepare(environment, os.environ['GITHUB_REPOSITORY'], region, overrides, ami)
+        parameter_name = f'/aws/service/eks/optimized-ami/{kubernetes_version}/amazon-linux-2023/x86_64/standard/recommended/image_id'
+        ami = session.client('ssm').get_parameter(Name=parameter_name)['Parameter']['Value']
+    values = prepare(environment, os.environ['GITHUB_REPOSITORY'], region, overrides, ami, kubernetes_version)
     # Empty dispatch input preserves an existing optional zone from TFVARS_JSON.
     if os.getenv('DNS_ZONE_NAME'):
         values['dns_zone_name'] = os.environ['DNS_ZONE_NAME']
@@ -68,7 +77,7 @@ def main():
         output.write(f'STATE_BUCKET={bucket}\n')
         for name in ('owner', 'cost_center', 'project'):
             output.write(f'TF_VAR_{name}={values.get(name, "eks-platform")}\n')
-    print(f'Prepared {environment} in account {ACCOUNT}; AMI {values["karpenter_ami_id"]}; state bucket {bucket}')
+    print(f'Prepared {environment} in account {ACCOUNT}; EKS {values["kubernetes_version"]}; AMI {values["karpenter_ami_id"]}; state bucket {bucket}')
 
 
 if __name__ == '__main__':

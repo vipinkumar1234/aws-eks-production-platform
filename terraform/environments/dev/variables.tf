@@ -38,6 +38,15 @@ variable "infra_version" {
   default     = "local"
   description = "Git branch or deployment identifier recorded on AWS resources"
 }
+variable "kubernetes_version" {
+  type        = string
+  default     = "1.36"
+  description = "Amazon EKS Kubernetes minor version. Existing clusters must upgrade one minor at a time, for example 1.34 -> 1.35 -> 1.36."
+  validation {
+    condition     = contains(["1.35", "1.36"], var.kubernetes_version)
+    error_message = "Supported EKS versions for this platform are 1.35 and 1.36."
+  }
+}
 variable "cluster_endpoint_public_access_cidrs" {
   type        = list(string)
   default     = []
@@ -72,7 +81,7 @@ variable "cost_center" {
 
 variable "karpenter_ami_id" {
   type        = string
-  description = "Tested regional EKS 1.36 AL2023 x86_64 standard AMI; explicitly pinned"
+  description = "Tested regional AL2023 x86_64 standard AMI for the selected EKS version; explicitly pinned"
   validation {
     condition     = can(regex("^ami-[0-9a-f]{17}$", var.karpenter_ami_id))
     error_message = "Supply a pinned regional AL2023 x86_64 AMI ID."

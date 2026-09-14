@@ -55,6 +55,7 @@ module "eks" {
   vpc_id                       = module.vpc.vpc_id
   private_subnets              = module.vpc.private_subnets
   public_subnets               = module.vpc.public_subnets
+  kubernetes_version           = var.kubernetes_version
   kms_key_arn                  = module.kms.key_arn
   endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
   admin_role_arns              = var.admin_role_arns
@@ -112,7 +113,7 @@ data "aws_ami" "karpenter" {
   }
   filter {
     name   = "name"
-    values = ["amazon-eks-node-al2023-x86_64-standard-1.36-*"]
+    values = ["amazon-eks-node-al2023-x86_64-standard-${var.kubernetes_version}-*"]
   }
 }
 

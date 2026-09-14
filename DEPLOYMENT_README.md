@@ -57,7 +57,8 @@ After trust setup, dispatch the Terraform workflow using its built-in defaults:
 | GitHub OIDC provider | Existing account-level provider created/reused in step 1 |
 | Image-role trust subject | GitHub numeric repository subject and selected GitHub environment |
 | Owner / cost centre | `vipin` / `gaming-test` |
-| Karpenter AMI | Regional Amazon AL2023 x86_64 EKS 1.36 recommendation resolved through SSM |
+| Kubernetes version | EKS 1.36 for new clusters; existing 1.34 clusters must run one approved apply at 1.35 before applying 1.36 |
+| Karpenter AMI | Regional Amazon AL2023 x86_64 recommendation for the selected Kubernetes version resolved through SSM |
 | Game URL | AWS-generated `https://<id>.cloudfront.net` |
 
 The role, provider, administrator list and GitHub trust subject no longer need to be copied into secrets/variables. `AWS_TERRAFORM_ROLE_ARN`, `ADMIN_ROLE_ARNS`, `GITHUB_OIDC_SUBJECTS`, `OWNER` and `COST_CENTER` are no longer read individually by this workflow. During GitHub Actions runs, `scripts/prepare_aws_deployment.py` builds the image-role trust subject from `GITHUB_REPOSITORY_OWNER_ID` and `GITHUB_REPOSITORY_ID` so it matches the customized numeric OIDC subject. It also grants EKS cluster-admin access to the account root principal because this lab environment is being administered from the root console session.
@@ -65,7 +66,7 @@ The role, provider, administrator list and GitHub trust subject no longer need t
 Optional GitHub environment settings:
 
 - Secret `TF_STATE_BUCKET`: retain your existing bucket if this environment was deployed previously. Do not change backend names for an existing deployment without explicitly migrating state.
-- Variable `KARPENTER_AMI_ID`: pin a reviewed regional AMI; otherwise each run resolves the current SSM recommendation. A later apply may select a newer AMI than an earlier plan run.
+- Variable `KARPENTER_AMI_ID`: pin a reviewed regional AMI for the selected Kubernetes version; otherwise each run resolves the current SSM recommendation. A later apply may select a newer AMI than an earlier plan run. During a 1.34 -> 1.35 -> 1.36 staged upgrade, leave this unset or update the pin to match the selected Kubernetes version.
 - Variable `TFVARS_JSON`: reviewed Terraform overrides, for example `{"owner":"vipin","cost_center":"gaming-test","karpenter_cpu_limit":16}`. These override defaults; a pinned AMI in this JSON takes precedence over KARPENTER_AMI_ID. The workflow rejects region mismatches.
 - Variable `DNS_ZONE_NAME`: optional zone creation, described below.
 
@@ -83,15 +84,17 @@ Creating a zone does **not** register a domain, delegate its name servers, or at
 
 Run Actions -> **terraform** -> Run workflow -> **main**, **dev**, **plan**. Review the result. Then dispatch **apply**. The apply run calculates and applies a fresh plan, so review changes between runs and enforce your environment approval policy.
 
+For a new cluster, select Kubernetes version **1.36**. For an existing cluster already created at **1.34**, do not select 1.36 first. EKS rejects skipped minor upgrades, so run **dev / apply / 1.35**, wait for it to finish, then run **dev / apply / 1.36**. Use the same sequence for prod when it already exists at 1.34.
+
 The Terraform workflow supports three manual actions:
 
 | Action | What it does | Approval gate |
 |---|---|---|
-| `plan` | Validates and produces an infrastructure plan only | No approval gate |
-| `apply` | Creates or updates the environment | Uses `dev-apply` or `prod-apply` |
-| `destroy` | Disables DynamoDB deletion protection for the managed game table, then destroys the environment | Uses `dev-destroy` or `prod-destroy` |
+| `plan` | Runs `validate`, then a separate `plan` job. No resources are changed. | No approval gate |
+| `apply` | Runs `validate`, waits at `apply_approval`, then runs the separate `apply` job using the selected Kubernetes version. | Uses `dev-apply` or `prod-apply` |
+| `destroy` | Runs `validate`, waits at `destroy_approval`, disables DynamoDB deletion protection for the managed game table, then destroys the environment. | Uses `dev-destroy` or `prod-destroy` |
 
-Configure required reviewers on the `*-apply` and `*-destroy` GitHub environments to make the approval gate active. Without required reviewers, GitHub still records the deployment environment, but it will not pause for approval.
+Configure required reviewers on the `*-apply` and `*-destroy` GitHub environments to make the approval gate active. Without required reviewers, GitHub still records the deployment environment, but it will not pause for approval. A `plan` run intentionally shows `apply_approval` and `destroy_approval` as skipped. An `apply` run must show `apply_approval` waiting before the `apply` job starts; a `destroy` run must show `destroy_approval` waiting before the `destroy` job starts. If the approval job is skipped during an apply or destroy run, confirm the workflow was manually dispatched from the **main** branch with action **apply** or **destroy**.
 
 The bootstrap creates/secures the state bucket before init: ownership checks, public-access block, owner-enforced ownership, versioning, naming tags, encryption preservation and deny-insecure-transport policy. Its role needs S3 bucket configuration/read permissions including GetBucketTagging/PutBucketTagging, plus state-object GetObject/PutObject and lock-object GetObject/PutObject/DeleteObject. Existing KMS-encrypted state buckets also require key permissions. There is no DynamoDB state-lock table; Terraform uses the native S3 `.tflock`. Never delete the bucket during normal cleanup.
 
