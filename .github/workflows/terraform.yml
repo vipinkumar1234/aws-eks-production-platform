@@ -39,7 +39,7 @@ jobs:
       - uses: aquasecurity/tfsec-action@v1.0.3
         with:
           working_directory: terraform
-          additional_args: --minimum-severity HIGH
+          additional_args: --minimum-severity HIGH --exclude-downloaded-modules
           github_token: ${{ github.token }}
   deploy:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'

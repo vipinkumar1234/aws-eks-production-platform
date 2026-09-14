@@ -9,6 +9,13 @@ ACCOUNT = '001495086648'
 ROLE = f'arn:aws:iam::{ACCOUNT}:role/AutomationAdminAll'
 
 
+def github_oidc_subject(repository, environment, owner_id=None, repository_id=None):
+    if owner_id and repository_id:
+        owner, repo = repository.split('/', 1)
+        return f'repo:{owner}@{owner_id}/{repo}@{repository_id}:environment:{environment}'
+    return f'repo:{repository}:environment:{environment}'
+
+
 def prepare(environment, repository, region, overrides, ami):
     if environment not in ('dev', 'prod'):
         raise ValueError('Unknown environment')
@@ -19,7 +26,12 @@ def prepare(environment, repository, region, overrides, ami):
         raise ValueError('Workflow region must match the environment')
     values = {
         'owner': 'vipin', 'cost_center': 'gaming-test', 'admin_role_arns': [ROLE],
-        'github_oidc_subjects': [f'repo:{repository}:environment:{environment}'],
+        'github_oidc_subjects': [github_oidc_subject(
+            repository,
+            environment,
+            os.getenv('GITHUB_REPOSITORY_OWNER_ID'),
+            os.getenv('GITHUB_REPOSITORY_ID'),
+        )],
         'github_oidc_provider_arn': f'arn:aws:iam::{ACCOUNT}:oidc-provider/token.actions.githubusercontent.com',
         'karpenter_ami_id': ami,
     }

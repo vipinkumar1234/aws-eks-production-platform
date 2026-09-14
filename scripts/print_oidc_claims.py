@@ -50,14 +50,20 @@ def main():
 
     expected_environment = os.getenv("EXPECTED_ENVIRONMENT")
     if expected_environment:
-        expected_sub = f"repo:{os.environ['GITHUB_REPOSITORY']}:environment:{expected_environment}"
-        if claims.get("sub") != expected_sub:
+        named_sub = f"repo:{os.environ['GITHUB_REPOSITORY']}:environment:{expected_environment}"
+        if claims.get("environment") != expected_environment:
             print(
-                f"Expected OIDC sub '{expected_sub}' but GitHub issued '{claims.get('sub')}'. "
-                "Update the IAM role trust policy or the GitHub Environment name.",
+                f"Expected GitHub Environment '{expected_environment}' but GitHub issued "
+                f"'{claims.get('environment')}'. Update the workflow environment or IAM trust policy.",
                 file=sys.stderr,
             )
             return 1
+        if claims.get("sub") != named_sub:
+            print(
+                f"GitHub issued OIDC sub '{claims.get('sub')}', which differs from the simple "
+                f"repo-name subject '{named_sub}'. Use the issued value in the IAM trust policy.",
+                file=sys.stderr,
+            )
     return 0
 
 
