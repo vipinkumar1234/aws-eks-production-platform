@@ -1,0 +1,55 @@
+name: platform-bootstrap
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, prod]
+        default: dev
+        required: true
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: platform-bootstrap-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  bootstrap:
+    runs-on: [self-hosted, linux, eks-platform-vpc]
+    environment: ${{ inputs.environment }}
+    env:
+      TF_INPUT: "false"
+      ROOT_INPUTS: ${{ vars.TFVARS_JSON }}
+      PINNED_AMI: ${{ vars.KARPENTER_AMI_ID }}
+      DNS_ZONE_NAME: ${{ vars.DNS_ZONE_NAME }}
+      TF_VAR_infra_version: ${{ github.sha }}
+      TF_VAR_kubernetes_version: ${{ vars.KUBERNETES_VERSION || '1.36' }}
+      KUBERNETES_VERSION: ${{ vars.KUBERNETES_VERSION || '1.36' }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      REGION: ${{ inputs.environment == 'prod' && 'us-east-1' || 'ap-southeast-1' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: python -m pip install boto3==1.43.89 PyYAML==6.0.2 jsonschema==4.26.0
+      - uses: hashicorp/setup-terraform@v4
+        with: { terraform_version: "1.14.0" }
+      - uses: azure/setup-kubectl@v4
+      - uses: azure/setup-helm@v4
+      - name: Show OIDC trust claims
+        run: python scripts/print_oidc_claims.py
+        env:
+          EXPECTED_ENVIRONMENT: ${{ inputs.environment }}
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::001495086648:role/AutomationAdminAll
+          audience: sts.amazonaws.com
+          allowed-account-ids: "001495086648"
+          aws-region: ${{ env.REGION }}
+      - name: Resolve deployment defaults and regional AMI
+        run: python scripts/prepare_aws_deployment.py
+      - name: Initialize Terraform state
+        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --bucket "$STATE_BUCKET" --region "$REGION" --check-only
+      - name: Bootstrap Kubernetes platform
+        run: python scripts/bootstrap_platform.py --environment "$ENVIRONMENT"
