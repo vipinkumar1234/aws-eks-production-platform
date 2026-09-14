@@ -7,10 +7,11 @@ import boto3
 
 ACCOUNT = '001495086648'
 ROLE = f'arn:aws:iam::{ACCOUNT}:role/AutomationAdminAll'
+ROOT = f'arn:aws:iam::{ACCOUNT}:root'
 
 
 def github_oidc_subject(repository, environment, owner_id=None, repository_id=None):
-    if owner_id and repository_id:
+    if owner_id and repository_id and os.getenv('GITHUB_REPOSITORY') == repository:
         owner, repo = repository.split('/', 1)
         return f'repo:{owner}@{owner_id}/{repo}@{repository_id}:environment:{environment}'
     return f'repo:{repository}:environment:{environment}'
@@ -25,7 +26,7 @@ def prepare(environment, repository, region, overrides, ami):
     if region != expected_region or overrides.get('aws_region', region) != region:
         raise ValueError('Workflow region must match the environment')
     values = {
-        'owner': 'vipin', 'cost_center': 'gaming-test', 'admin_role_arns': [ROLE],
+        'owner': 'vipin', 'cost_center': 'gaming-test', 'admin_role_arns': [ROLE, ROOT],
         'github_oidc_subjects': [github_oidc_subject(
             repository,
             environment,

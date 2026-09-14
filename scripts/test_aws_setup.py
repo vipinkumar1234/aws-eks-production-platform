@@ -1,7 +1,7 @@
 import os
 import unittest
 from unittest.mock import patch
-from prepare_aws_deployment import prepare, ROLE, ACCOUNT, github_oidc_subject
+from prepare_aws_deployment import prepare, ROLE, ROOT, ACCOUNT, github_oidc_subject
 from setup_github_oidc import check_configuration, merge_trust, trust_statement
 
 
@@ -15,20 +15,35 @@ class DeploymentSetupTest(unittest.TestCase):
         self.assertTrue(check_configuration(provider, {'Statement': []}))
 
     def test_defaults_match_existing_role_and_repository(self):
-        values = prepare('dev', 'vipinkumar1234/aws-eks-production-platform', 'ap-southeast-1', {}, 'ami-0123456789abcdef0')
-        self.assertEqual(values['admin_role_arns'], [ROLE])
+        with patch.dict(os.environ, {
+            'GITHUB_REPOSITORY': 'vipinkumar1234/aws-eks-production-platform',
+            'GITHUB_REPOSITORY_OWNER_ID': '110930371',
+            'GITHUB_REPOSITORY_ID': '1359084778',
+        }):
+            values = prepare('dev', 'vipinkumar1234/aws-eks-production-platform', 'ap-southeast-1', {}, 'ami-0123456789abcdef0')
+        self.assertEqual(values['admin_role_arns'], [ROLE, ROOT])
         self.assertIn(ACCOUNT, values['github_oidc_provider_arn'])
-        self.assertEqual(values['github_oidc_subjects'], ['repo:vipinkumar1234/aws-eks-production-platform:environment:dev'])
+        self.assertEqual(values['github_oidc_subjects'], ['repo:vipinkumar1234@110930371/aws-eks-production-platform@1359084778:environment:dev'])
 
     def test_custom_github_oidc_subject_uses_repository_ids(self):
-        subject = github_oidc_subject('vipinkumar1234/aws-eks-production-platform', 'dev', '110930371', '1359084778')
+        with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'vipinkumar1234/aws-eks-production-platform'}):
+            subject = github_oidc_subject('vipinkumar1234/aws-eks-production-platform', 'dev', '110930371', '1359084778')
         self.assertEqual(subject, 'repo:vipinkumar1234@110930371/aws-eks-production-platform@1359084778:environment:dev')
-        with patch.dict(os.environ, {'GITHUB_REPOSITORY_OWNER_ID': '110930371', 'GITHUB_REPOSITORY_ID': '1359084778'}):
+        with patch.dict(os.environ, {
+            'GITHUB_REPOSITORY': 'vipinkumar1234/aws-eks-production-platform',
+            'GITHUB_REPOSITORY_OWNER_ID': '110930371',
+            'GITHUB_REPOSITORY_ID': '1359084778',
+        }):
             values = prepare('dev', 'vipinkumar1234/aws-eks-production-platform', 'ap-southeast-1', {}, 'ami-0123456789abcdef0')
         self.assertEqual(values['github_oidc_subjects'], [subject])
 
     def test_prod_and_explicit_ami(self):
-        values = prepare('prod', 'org/repo', 'us-east-1', {'karpenter_ami_id': 'ami-pinned'}, 'ami-new')
+        with patch.dict(os.environ, {
+            'GITHUB_REPOSITORY': 'vipinkumar1234/aws-eks-production-platform',
+            'GITHUB_REPOSITORY_OWNER_ID': '110930371',
+            'GITHUB_REPOSITORY_ID': '1359084778',
+        }):
+            values = prepare('prod', 'org/repo', 'us-east-1', {'karpenter_ami_id': 'ami-pinned'}, 'ami-new')
         self.assertEqual(values['karpenter_ami_id'], 'ami-pinned')
         self.assertEqual(values['github_oidc_subjects'], ['repo:org/repo:environment:prod'])
 

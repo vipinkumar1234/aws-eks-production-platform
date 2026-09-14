@@ -48,7 +48,7 @@ After trust setup, dispatch the Terraform workflow using its built-in defaults:
 
 | Setting | Automatic value |
 |---|---|
-| Deployment and EKS administrator role | `arn:aws:iam::001495086648:role/AutomationAdminAll` |
+| Deployment and EKS administrator principals | `arn:aws:iam::001495086648:role/AutomationAdminAll` and `arn:aws:iam::001495086648:root` |
 | Account | `001495086648`; authentication and preflight reject another account |
 | Dev region | `ap-southeast-1` |
 | Prod region | `us-east-1` |
@@ -60,7 +60,7 @@ After trust setup, dispatch the Terraform workflow using its built-in defaults:
 | Karpenter AMI | Regional Amazon AL2023 x86_64 EKS 1.34 recommendation resolved through SSM |
 | Game URL | AWS-generated `https://<id>.cloudfront.net` |
 
-The role, provider, administrator list and GitHub trust subject no longer need to be copied into secrets/variables. `AWS_TERRAFORM_ROLE_ARN`, `ADMIN_ROLE_ARNS`, `GITHUB_OIDC_SUBJECTS`, `OWNER` and `COST_CENTER` are no longer read individually by this workflow. During GitHub Actions runs, `scripts/prepare_aws_deployment.py` builds the image-role trust subject from `GITHUB_REPOSITORY_OWNER_ID` and `GITHUB_REPOSITORY_ID` so it matches the customized numeric OIDC subject.
+The role, provider, administrator list and GitHub trust subject no longer need to be copied into secrets/variables. `AWS_TERRAFORM_ROLE_ARN`, `ADMIN_ROLE_ARNS`, `GITHUB_OIDC_SUBJECTS`, `OWNER` and `COST_CENTER` are no longer read individually by this workflow. During GitHub Actions runs, `scripts/prepare_aws_deployment.py` builds the image-role trust subject from `GITHUB_REPOSITORY_OWNER_ID` and `GITHUB_REPOSITORY_ID` so it matches the customized numeric OIDC subject. It also grants EKS cluster-admin access to the account root principal because this lab environment is being administered from the root console session.
 
 Optional GitHub environment settings:
 
@@ -108,7 +108,7 @@ After apply, add to GitHub dev:
 | Variable | ECR_REPOSITORY | Repository name, e.g. `eks-platform-apse1-dev-sample-app`, not the full registry URL |
 | Secret | GITOPS_PR_TOKEN | Repository-scoped token with contents and pull-request write permissions, needed for subsequent image PRs |
 
-Run Actions -> **application** on main. It tests/scans and pushes the image. If Terraform has not created ECR yet, the workflow exits cleanly and writes a summary telling you to run Terraform `dev` `apply` first. For the first deployment after ECR exists, it succeeds after publishing and explains that the GitOps tree must be rendered; it does not try to create an image PR for a missing tree. Once the tree exists, the workflow creates an image update PR, which must be reviewed/merged for Argo CD to deploy.
+Run Actions -> **application** on main. It tests/scans and pushes the image. If Terraform has not created ECR yet, the workflow exits cleanly and writes a summary telling you to run Terraform `dev` `apply` first. Trivy fails the build for HIGH/CRITICAL vulnerabilities that have a fix; unfixed OS package findings are ignored so the build is not blocked by base-image CVEs without an upstream patch. For the first deployment after ECR exists, it succeeds after publishing and explains that the GitOps tree must be rendered; it does not try to create an image PR for a missing tree. Once the tree exists, the workflow creates an image update PR, which must be reviewed/merged for Argo CD to deploy.
 
 The application workflow uses `arn:aws:iam::001495086648:role/AutomationAdminAll` directly, just like Terraform. An old `AWS_APP_ROLE_ARN` secret is no longer read. CloudShell is needed for the initial trust setup only; routine infrastructure deployment and image publishing run in GitHub Actions. Kubernetes bootstrap still requires the network access described in step 6.
 
@@ -128,6 +128,8 @@ Images use immutable Git commit tags. Do not rerun a successful image push for t
 ## 6. Prepare a bootstrap host and render GitOps
 
 You need a workstation or administration host with network access to the EKS API (VPC-connected VPN/host), using an administrator role from ADMIN_ROLE_ARNS. The repository does not create an administration host or VPN. Alternatively, explicitly allow only your administrator's public `/32` through `cluster_endpoint_public_access_cidrs` in Terraform; never use `0.0.0.0/0`. A GitHub-hosted runner can provision AWS infrastructure but cannot reach the default private Kubernetes endpoint.
+
+The EKS console shows `Unauthorized` when the currently signed-in AWS principal is not listed in EKS access entries. Even the AWS root user needs an EKS access entry when `enable_cluster_creator_admin_permissions = false`. The generated defaults now include `arn:aws:iam::001495086648:root`; run a new Terraform `dev` `apply`, wait a minute for EKS access-entry propagation, then refresh the EKS console. Verify with `aws eks list-access-entries --region ap-southeast-1 --cluster-name eks-platform-apse1-dev-eks`.
 
 Install Python 3.12, Terraform 1.14.0, AWS CLI v2, Helm and kubectl compatible with EKS 1.34. Commands below use Bash/WSL from the repository root. Python scripts also work from PowerShell. Authenticate to the correct AWS account, for example with AWS SSO and your selected AWS_PROFILE.
 

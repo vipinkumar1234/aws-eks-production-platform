@@ -78,6 +78,7 @@ jobs:
         with:
           image-ref: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
           severity: HIGH,CRITICAL
+          ignore-unfixed: true
           exit-code: 1
       - name: Push scanned image
         if: steps.ecr_repository.outputs.ready == 'true'

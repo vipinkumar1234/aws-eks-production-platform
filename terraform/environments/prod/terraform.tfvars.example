@@ -1,6 +1,6 @@
 # Copy to terraform.tfvars only for local use; never commit secrets.
 project = "eks-platform"
-admin_role_arns = ["arn:aws:iam::001495086648:role/AutomationAdminAll"]
+admin_role_arns = ["arn:aws:iam::001495086648:role/AutomationAdminAll", "arn:aws:iam::001495086648:root"]
 github_oidc_subjects = ["repo:vipinkumar1234@110930371/aws-eks-production-platform@1359084778:environment:prod"]
 owner = "vipin"
 cost_center = "gaming-test"
