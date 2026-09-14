@@ -109,9 +109,10 @@ After apply, add to GitHub dev:
 | Type | Name | Value |
 |---|---|---|
 | Variable | ECR_REPOSITORY | Repository name, e.g. `eks-platform-apse1-dev-sample-app`, not the full registry URL |
-| Secret | GITOPS_PR_TOKEN | Repository-scoped token with contents and pull-request write permissions, needed for subsequent image PRs |
 
-Run Actions -> **application** on main. It tests/scans and pushes the image. If Terraform has not created ECR yet, the workflow exits cleanly and writes a summary telling you to run Terraform `dev` `apply` first. The Docker build upgrades Debian packages before installing the app so the image picks up current base-image security fixes. Trivy fails the build for HIGH/CRITICAL vulnerabilities that have a fix; unfixed OS package findings are ignored so the build is not blocked by base-image CVEs without an upstream patch. After ECR exists, the workflow renders the dev GitOps tree from Terraform outputs and creates a pull request under `gitops/environments/dev`. Later runs update that same rendered tree with the new immutable image digest. Review and merge the PR before bootstrapping or syncing the cluster.
+No GitHub PR token secret is required. The application workflow uses the built-in `GITHUB_TOKEN` with job-level `contents: write` permission to commit the rendered GitOps tree directly to `main`.
+
+Run Actions -> **application** on main. It tests/scans and pushes the image. If Terraform has not created ECR yet, the workflow exits cleanly and writes a summary telling you to run Terraform `dev` `apply` first. The Docker build upgrades Debian packages before installing the app so the image picks up current base-image security fixes. Trivy fails the build for HIGH/CRITICAL vulnerabilities that have a fix; unfixed OS package findings are ignored so the build is not blocked by base-image CVEs without an upstream patch. After ECR exists, the workflow renders the dev GitOps tree from Terraform outputs, commits `gitops/environments/dev` directly to `main`, then runs the Kubernetes bootstrap job on the VPC-connected runner.
 
 The application workflow uses `arn:aws:iam::001495086648:role/AutomationAdminAll` directly, just like Terraform. An old `AWS_APP_ROLE_ARN` secret is no longer read. CloudShell is needed for the initial trust setup only; routine infrastructure deployment, image publishing and GitOps rendering run in GitHub Actions. Kubernetes bootstrap is automated too, but the runner must have the network access described in step 6.
 
@@ -120,29 +121,27 @@ The application workflow uses `arn:aws:iam::001495086648:role/AutomationAdminAll
 1. Commit and push these fixes to **main**. Start new workflow runs on that commit; rerunning an old failed run uses its old workflow definition.
 2. Create/check GitHub environments **dev** and **prod**, restricting deployment branches to **main**. Both workflows request `id-token: write` and audience `sts.amazonaws.com`.
 3. In normal-user CloudShell, update your repository checkout and run the setup and `--check-only` commands in step 1 above. An administrator policy alone does not authorize GitHub federation: the account needs the OIDC provider and environment-scoped role trust.
-4. Run a new Terraform **dev plan**, then **apply** after reviewing the plan and approving the GitHub environment gate. Wait for ECR to exist before starting the application workflow. Configure the ECR variable and PR token listed above.
-5. Run a new **application** workflow on main. It opens a GitOps render PR using the real published image digest. Review and merge that PR. The source image placeholder is a rendering template and must never be deployed directly.
+4. Run a new Terraform **dev plan**, then **apply** after reviewing the plan and approving the GitHub environment gate. Wait for ECR to exist before starting the application workflow. Configure the ECR repository variable listed above.
+5. Run a new **application** workflow on main. It renders and commits GitOps using the real published image digest, then starts the bootstrap job. The source image placeholder is a rendering template and must never be deployed directly.
 6. If AWS still reports an invalid web identity token after the configuration check passes, collect the full new authentication error and the safe `--check-only` output. The check validates configuration, not a live GitHub token. Investigate AWS STS/provider validation using the [AWS troubleshooting guide](https://repost.aws/knowledge-center/iam-sts-invalididentitytoken); do not share raw OIDC tokens or delete a shared provider.
 
 The deployment now explicitly uses UID/GID 10001, `imagePullPolicy: Always`, and digest-based image rendering. CI keeps all Kubernetes security checks enabled. Actions were updated to Node.js 24 runtimes, including configure-aws-credentials v6, which accepts `allowed-account-ids`. tfsec receives `--minimum-severity HIGH --exclude-downloaded-modules` through its supported `additional_args` input and receives `github_token` to authenticate GitHub API requests. The scan excludes downloaded `.terraform/modules` internals because the authored EKS wrapper already enables secret encryption with the platform KMS key. These address the reported configuration warnings; future action releases, service errors and rate limits still require checking new runs.
 
-Images use immutable Git commit tags. If a workflow is rerun for a commit SHA that already exists in ECR, the application workflow now reuses that existing digest and skips rebuild/push so ECR immutability does not fail the run. The workflow then renders GitOps with that digest and opens/updates the deployment PR.
+Images use immutable Git commit tags. If a workflow is rerun for a commit SHA that already exists in ECR, the application workflow now reuses that existing digest and skips rebuild/push so ECR immutability does not fail the run. The workflow then renders and commits GitOps with that digest.
 
 ## 6. Bootstrap from automation, not manual kubectl steps
 
-The repository includes automation for the Kubernetes layer. Terraform owns AWS infrastructure. The application workflow renders GitOps after publishing an image. The **platform-bootstrap** workflow installs Karpenter, Argo CD, the AWS Load Balancer Controller, observability and the sample app, then waits until the target group has healthy pod IPs.
+The repository includes automation for the Kubernetes layer. Terraform owns AWS infrastructure. The application workflow renders GitOps after publishing an image, commits it to main, installs Karpenter, Argo CD, the AWS Load Balancer Controller, observability and the sample app, then waits until the target group has healthy pod IPs.
 
-The **platform-bootstrap** workflow runs on a self-hosted runner labeled `self-hosted`, `linux`, `eks-platform-vpc`. That runner must be inside the EKS VPC or a connected network because the EKS API endpoint is private and resolves to `10.x` addresses. A GitHub-hosted runner can provision AWS infrastructure, but it cannot reach the default private Kubernetes endpoint. [AWS documents that private EKS endpoints require VPC or connected-network access](https://repost.aws/knowledge-center/eks-troubleshoot-kubectl-commands), and [CloudShell VPC environments inherit VPC network access](https://docs.aws.amazon.com/cloudshell/latest/userguide/using-cshell-in-vpc.html).
+The application workflow's `bootstrap` job, and the manual **platform-bootstrap** recovery workflow, run on a self-hosted runner labeled `self-hosted`, `linux`, `eks-platform-vpc`. That runner must be inside the EKS VPC or a connected network because the EKS API endpoint is private and resolves to `10.x` addresses. A GitHub-hosted runner can provision AWS infrastructure, but it cannot reach the default private Kubernetes endpoint. [AWS documents that private EKS endpoints require VPC or connected-network access](https://repost.aws/knowledge-center/eks-troubleshoot-kubectl-commands), and [CloudShell VPC environments inherit VPC network access](https://docs.aws.amazon.com/cloudshell/latest/userguide/using-cshell-in-vpc.html).
 
 Production flow:
 
 1. Run Terraform **dev / apply** and approve `dev-apply`.
-2. Run the **application** workflow. It builds/scans/pushes the image and opens a GitOps render PR.
-3. Review and merge the GitOps PR.
-4. Run **platform-bootstrap** from the VPC-connected self-hosted runner.
-5. Open `app_url`.
+2. Run the **application** workflow. It builds/scans/pushes the image, commits rendered GitOps and runs the bootstrap job from the VPC-connected self-hosted runner.
+3. Open `app_url`.
 
-Until you create the self-hosted runner, you can run the same automation as one command from CloudShell VPC after merging the GitOps PR:
+Until you create the self-hosted runner, you can run the same automation as one command from CloudShell VPC after the application workflow commits GitOps:
 
 ```bash
 cd ~/aws-eks-production-platform
@@ -180,7 +179,7 @@ export IMAGE_URI="$ECR_URL@$IMAGE_DIGEST"
 python scripts/render_gitops.py --environment dev
 ```
 
-The manual render command is kept for local recovery only. In normal CI, the application workflow runs it and creates the pull request. Review, commit and merge **gitops/environments/dev** to main before bootstrapping Argo CD. Terraform outputs supply the generated app address and target group ARN; no manual URL editing is needed. If you also plan/apply locally, copy that environment's terraform.tfvars.example to terraform.tfvars and fill the same inputs used by CI. Merely initializing/reading existing state does not require supplying all plan inputs.
+The manual render command is kept for local recovery only. In normal CI, the application workflow runs it and commits the rendered tree. Terraform outputs supply the generated app address and target group ARN; no manual URL editing is needed. If you also plan/apply locally, copy that environment's terraform.tfvars.example to terraform.tfvars and fill the same inputs used by CI. Merely initializing/reading existing state does not require supplying all plan inputs.
 
 ## 7. Bootstrap Karpenter and Argo CD
 
