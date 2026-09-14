@@ -51,3 +51,4 @@ class DeploymentSetupTest(unittest.TestCase):
         subjects = condition['token.actions.githubusercontent.com:sub']
         self.assertEqual(len(subjects), 2)
         self.assertTrue(all('*' not in sub and ':environment:' in sub for sub in subjects))
+        self.assertIn('repo:vipinkumar1234@110930371/aws-eks-production-platform@1359084778:environment:dev', subjects)

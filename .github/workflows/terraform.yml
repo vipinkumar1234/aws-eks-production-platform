@@ -14,7 +14,7 @@ on:
         required: true
       action:
         type: choice
-        options: [plan, apply]
+        options: [plan, apply, destroy]
         default: plan
         required: true
 permissions:
@@ -42,7 +42,7 @@ jobs:
           additional_args: --minimum-severity HIGH --exclude-downloaded-modules
           github_token: ${{ github.token }}
   deploy:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.action != 'destroy'
     needs: validate
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
@@ -93,3 +93,51 @@ jobs:
         if: inputs.action == 'apply'
         run: |
           terraform -chdir="terraform/environments/$ENVIRONMENT" output -json dns_zone >> "$GITHUB_STEP_SUMMARY"
+  destroy:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.action == 'destroy'
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_INPUT: "false"
+      ROOT_INPUTS: ${{ vars.TFVARS_JSON }}
+      PINNED_AMI: ${{ vars.KARPENTER_AMI_ID }}
+      DNS_ZONE_NAME: ${{ vars.DNS_ZONE_NAME }}
+      TF_VAR_infra_version: ${{ github.sha }}
+      TF_VAR_dynamodb_deletion_protection_enabled: "false"
+      ENVIRONMENT: ${{ inputs.environment }}
+      STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      REGION: ${{ inputs.environment == 'prod' && 'us-east-1' || 'ap-southeast-1' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - name: Show OIDC trust claims
+        run: python scripts/print_oidc_claims.py
+        env:
+          EXPECTED_ENVIRONMENT: ${{ inputs.environment }}
+      - run: python -m pip install boto3==1.43.89
+      - uses: hashicorp/setup-terraform@v4
+        with: { terraform_version: "1.14.0" }
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::001495086648:role/AutomationAdminAll
+          audience: sts.amazonaws.com
+          allowed-account-ids: "001495086648"
+          aws-region: ${{ env.REGION }}
+      - name: Resolve deployment defaults and regional AMI
+        run: python scripts/prepare_aws_deployment.py
+      - name: Create and secure state bucket before init
+        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --bucket "$STATE_BUCKET" --region "$REGION"
+      - name: Disable DynamoDB deletion protection
+        run: |
+          if terraform -chdir="terraform/environments/$ENVIRONMENT" state list module.game_data.aws_dynamodb_table.this >/dev/null 2>&1; then
+            terraform -chdir="terraform/environments/$ENVIRONMENT" apply -lock-timeout=5m -auto-approve -target=module.game_data.aws_dynamodb_table.this
+          else
+            echo "DynamoDB table is not in Terraform state; skipping deletion-protection update." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Destroy infrastructure
+        run: terraform -chdir="terraform/environments/$ENVIRONMENT" destroy -lock-timeout=5m -auto-approve

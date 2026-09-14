@@ -8,7 +8,7 @@ Traffic: browser HTTPS -> CloudFront + WAF -> VPC origin -> private HTTP ALB -> 
 
 The workflow is configured for account **001495086648**, role **AutomationAdminAll**, repository **vipinkumar1234/aws-eks-production-platform**. The role ARN is not a credential and is committed directly in the workflow. No AWS access keys are stored in GitHub.
 
-Create GitHub environments **dev** and **prod** in repository Settings -> Environments. Restrict both to the **main** branch; require reviewers for prod. Anyone able to run trusted deployment code can use this role's permissions, so protect main and these environments.
+Create GitHub environments **dev** and **prod** in repository Settings -> Environments. Restrict both to the **main** branch and enable required reviewers on the environments where you want a manual approval gate. The Terraform `apply` and `destroy` jobs both use these environments, so GitHub pauses them for approval before AWS credentials are requested. The application build also uses the **dev** environment for OIDC, so requiring reviewers on **dev** will also gate image publishing. Anyone able to run trusted deployment code can use this role's permissions, so protect main and these environments.
 
 Push the updated files to main. Use the normal AWS CloudShell user, authenticated as an administrator in account 001495086648. Do not run `sudo su -`: it changes the home directory and Python environment. If your prompt currently starts with `[root@`, run `exit` once to return to the CloudShell user. For a fresh checkout:
 
@@ -38,7 +38,7 @@ python3 scripts/setup_github_oidc.py
 
 The script checks the account and existing role, creates/reuses GitHub's OIDC provider, and merges exact dev/prod environment trust into AutomationAdminAll without replacing its other trust statements. Re-running it does not add duplicate statements. It does not attach IAM permissions. The invoking identity needs IAM GetRole, GetOpenIDConnectProvider, CreateOpenIDConnectProvider, AddClientIDToOpenIDConnectProvider and UpdateAssumeRolePolicy as needed, plus STS identity access.
 
-This initial authorization cannot be performed by a GitHub workflow that AWS does not yet trust. If the provider and exact environment trust already exist, skip the script. [GitHub's AWS OIDC documentation](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws) explains the audience and environment subject requirements.
+This initial authorization cannot be performed by a GitHub workflow that AWS does not yet trust. If the provider and exact environment trust already exist, skip the script. This repository currently uses GitHub's customized numeric subject format, so the role trust must include `repo:vipinkumar1234@110930371/aws-eks-production-platform@1359084778:environment:dev` and the matching `prod` subject. The `Show OIDC trust claims` workflow step prints the exact safe `sub` value to use if GitHub changes the subject template. [GitHub's AWS OIDC documentation](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws) explains the audience and environment subject requirements.
 
 AutomationAdminAll must have permission to provision the resources in this repository, including IAM/PassRole/service-linked roles, VPC/EC2/ELB, EKS, S3, ECR, KMS, Secrets Manager, Cognito, DynamoDB, CloudWatch, SSM parameter reads, WAF and CloudFront. Its name alone does not prove these policies are attached. No role permissions have been inspected or changed by this repository update.
 
@@ -55,12 +55,12 @@ After trust setup, dispatch the Terraform workflow using its built-in defaults:
 | Dev state bucket | `eks-platform-001495086648-ap-southeast-1-dev-tfstate` |
 | Prod state bucket | `eks-platform-001495086648-us-east-1-prod-tfstate` |
 | GitHub OIDC provider | Existing account-level provider created/reused in step 1 |
-| Image-role trust subject | Current repository and selected GitHub environment |
+| Image-role trust subject | GitHub numeric repository subject and selected GitHub environment |
 | Owner / cost centre | `vipin` / `gaming-test` |
 | Karpenter AMI | Regional Amazon AL2023 x86_64 EKS 1.34 recommendation resolved through SSM |
 | Game URL | AWS-generated `https://<id>.cloudfront.net` |
 
-The role, provider, administrator list and GitHub trust subject no longer need to be copied into secrets/variables. `AWS_TERRAFORM_ROLE_ARN`, `ADMIN_ROLE_ARNS`, `GITHUB_OIDC_SUBJECTS`, `OWNER` and `COST_CENTER` are no longer read individually by this workflow.
+The role, provider, administrator list and GitHub trust subject no longer need to be copied into secrets/variables. `AWS_TERRAFORM_ROLE_ARN`, `ADMIN_ROLE_ARNS`, `GITHUB_OIDC_SUBJECTS`, `OWNER` and `COST_CENTER` are no longer read individually by this workflow. During GitHub Actions runs, `scripts/prepare_aws_deployment.py` builds the image-role trust subject from `GITHUB_REPOSITORY_OWNER_ID` and `GITHUB_REPOSITORY_ID` so it matches the customized numeric OIDC subject.
 
 Optional GitHub environment settings:
 
@@ -83,6 +83,16 @@ Creating a zone does **not** register a domain, delegate its name servers, or at
 
 Run Actions -> **terraform** -> Run workflow -> **main**, **dev**, **plan**. Review the result. Then dispatch **apply**. The apply run calculates and applies a fresh plan, so review changes between runs and enforce your environment approval policy.
 
+The Terraform workflow supports three manual actions:
+
+| Action | What it does | Approval gate |
+|---|---|---|
+| `plan` | Validates and produces an infrastructure plan only | Uses the selected GitHub environment |
+| `apply` | Creates or updates the environment | Uses the selected GitHub environment |
+| `destroy` | Disables DynamoDB deletion protection for the managed game table, then destroys the environment | Uses the selected GitHub environment |
+
+Configure required reviewers on GitHub environments **dev** and **prod** to make the approval gate active. Without required reviewers, GitHub still records the deployment environment, but it will not pause for approval.
+
 The bootstrap creates/secures the state bucket before init: ownership checks, public-access block, owner-enforced ownership, versioning, naming tags, encryption preservation and deny-insecure-transport policy. Its role needs S3 bucket configuration/read permissions including GetBucketTagging/PutBucketTagging, plus state-object GetObject/PutObject and lock-object GetObject/PutObject/DeleteObject. Existing KMS-encrypted state buckets also require key permissions. There is no DynamoDB state-lock table; Terraform uses the native S3 `.tflock`. Never delete the bucket during normal cleanup.
 
 Terraform creates the private ALB/listener/target group, CloudFront VPC origin/distribution, CloudFront-scoped WAF, EKS, data/auth resources and Karpenter AWS resources. CloudFront deployment can take several minutes. The workflow summary displays **app_url**, **github_actions_role_arn** and **ecr_repository_url**. The URL can return 503 until application pods are registered; this is expected before steps 5-8.
@@ -98,7 +108,7 @@ After apply, add to GitHub dev:
 | Variable | ECR_REPOSITORY | Repository name, e.g. `eks-platform-apse1-dev-sample-app`, not the full registry URL |
 | Secret | GITOPS_PR_TOKEN | Repository-scoped token with contents and pull-request write permissions, needed for subsequent image PRs |
 
-Run Actions -> **application** on main. It tests/scans and pushes the image. For the first deployment it succeeds after publishing and explains that the GitOps tree must be rendered; it does not try to create an image PR for a missing tree. Once the tree exists, the workflow creates an image update PR, which must be reviewed/merged for Argo CD to deploy.
+Run Actions -> **application** on main. It tests/scans and pushes the image. If Terraform has not created ECR yet, the workflow exits cleanly and writes a summary telling you to run Terraform `dev` `apply` first. For the first deployment after ECR exists, it succeeds after publishing and explains that the GitOps tree must be rendered; it does not try to create an image PR for a missing tree. Once the tree exists, the workflow creates an image update PR, which must be reviewed/merged for Argo CD to deploy.
 
 The application workflow uses `arn:aws:iam::001495086648:role/AutomationAdminAll` directly, just like Terraform. An old `AWS_APP_ROLE_ARN` secret is no longer read. CloudShell is needed for the initial trust setup only; routine infrastructure deployment and image publishing run in GitHub Actions. Kubernetes bootstrap still requires the network access described in step 6.
 
@@ -107,11 +117,11 @@ The application workflow uses `arn:aws:iam::001495086648:role/AutomationAdminAll
 1. Commit and push these fixes to **main**. Start new workflow runs on that commit; rerunning an old failed run uses its old workflow definition.
 2. Create/check GitHub environments **dev** and **prod**, restricting deployment branches to **main**. Both workflows request `id-token: write` and audience `sts.amazonaws.com`.
 3. In normal-user CloudShell, update your repository checkout and run the setup and `--check-only` commands in step 1 above. An administrator policy alone does not authorize GitHub federation: the account needs the OIDC provider and environment-scoped role trust.
-4. Run a new Terraform **dev plan**, then **apply** after reviewing the plan. Wait for ECR to exist before starting the application workflow. Configure the ECR variable and PR token listed above.
+4. Run a new Terraform **dev plan**, then **apply** after reviewing the plan and approving the GitHub environment gate. Wait for ECR to exist before starting the application workflow. Configure the ECR variable and PR token listed above.
 5. Run a new **application** workflow on main. If a rendered GitOps tree already exists, regenerate it using step 6 and a real published image digest, then review/commit the changed manifests. The source image placeholder is a rendering template and must never be deployed directly.
 6. If AWS still reports an invalid web identity token after the configuration check passes, collect the full new authentication error and the safe `--check-only` output. The check validates configuration, not a live GitHub token. Investigate AWS STS/provider validation using the [AWS troubleshooting guide](https://repost.aws/knowledge-center/iam-sts-invalididentitytoken); do not share raw OIDC tokens or delete a shared provider.
 
-The deployment now explicitly uses UID/GID 10001, `imagePullPolicy: Always`, and digest-based image rendering. CI keeps all Kubernetes security checks enabled. Actions were updated to Node.js 24 runtimes, including configure-aws-credentials v6, which accepts `allowed-account-ids`. tfsec receives the severity option through its supported `additional_args` input and receives `github_token` to authenticate GitHub API requests. These address the reported configuration warnings; future action releases, service errors and rate limits still require checking new runs.
+The deployment now explicitly uses UID/GID 10001, `imagePullPolicy: Always`, and digest-based image rendering. CI keeps all Kubernetes security checks enabled. Actions were updated to Node.js 24 runtimes, including configure-aws-credentials v6, which accepts `allowed-account-ids`. tfsec receives `--minimum-severity HIGH --exclude-downloaded-modules` through its supported `additional_args` input and receives `github_token` to authenticate GitHub API requests. The scan excludes downloaded `.terraform/modules` internals because the authored EKS wrapper already enables secret encryption with the platform KMS key. These address the reported configuration warnings; future action releases, service errors and rate limits still require checking new runs.
 
 Images use immutable Git commit tags. Do not rerun a successful image push for the same commit; use the already published digest, or commit an actual image change before building again. Copy the initial `IMAGE_URI` from the workflow summary or resolve it with the command in step 6.
 
@@ -214,13 +224,17 @@ Before serving production users, configure paging/SLOs, quota and cost alerts, K
 
 Repeat with GitHub environment prod, prod account/roles, separate bucket, prod AMI and region us-east-1. Require production reviewers. The application workflow currently builds dev only: promote a tested image into prod ECR, render prod using its immutable digest, review/merge that tree, then bootstrap prod from its authorized host. Do not reuse the dev ECR URL or regional AMI. Run all live checks again.
 
-## Existing installations and cleanup
+## Existing Installations and Destroy
 
 Do not apply this change blindly to a running domain-based deployment. The old ACM resources leave the active Terraform graph, WAF changes from REGIONAL to CLOUDFRONT in us-east-1, and supported AZ selection can change subnet/node placement. These can destroy/replace resources. Back up state/data, review the full plan and use a staged migration or a new environment if continuity matters. Existing external Route 53 aliases are not removed automatically.
 
 The new ALB uses the distinct `-edge` name to avoid colliding with the old controller-owned `-app` ALB. Rendering removes only the obsolete generated `apps/sample-app/ingress.yaml`. Review that deletion: Argo pruning the old Ingress deletes its ALB. Remove obsolete copies from any other GitOps paths before enabling reconciliation. The TargetGroupBinding may not coexist with the old ingress-based deployment as a seamless cutover without a deliberate migration plan.
 
-For cleanup, remove the app TargetGroupBinding through Git/Argo and wait for pod deregistration while the controller still runs. Drain/delete Karpenter NodeClaims and confirm EC2 termination while its controller/IAM/VPC remain. Stop Argo reconciliation, initialize with `python scripts/terraform_init.py --environment dev --check-only`, and review a Terraform destroy plan. Terraform removes CloudFront before its VPC origin/private ALB and then networking; AWS-managed VPC-origin ENIs may take time to disappear. Disable DynamoDB deletion protection only when intentionally deleting data. Retain state and decide log retention explicitly. Never delete the state bucket as part of normal cleanup.
+Before destroy, remove the app TargetGroupBinding through Git/Argo and wait for pod deregistration while the controller still runs. Drain/delete Karpenter NodeClaims and confirm EC2 termination while its controller/IAM/VPC remain. Stop Argo reconciliation so it does not recreate Kubernetes resources while Terraform removes AWS infrastructure.
+
+To destroy from GitHub Actions, run Actions -> **terraform** -> Run workflow -> **main**, choose the environment, and set action **destroy**. GitHub uses the selected environment as the manual approval gate. The destroy job sets `TF_VAR_dynamodb_deletion_protection_enabled=false`, applies that single table update only if the table is already in Terraform state, then runs `terraform destroy`. This is intentional because the game table uses deletion protection by default for normal deploys.
+
+Terraform removes CloudFront before its VPC origin/private ALB and then networking; AWS-managed VPC-origin ENIs may take time to disappear. Retain the state bucket and decide log retention explicitly. Never delete the state bucket as part of normal cleanup. If destroy fails because resources are still attached, wait for AWS cleanup or remove the remaining Kubernetes bindings/controllers, then rerun the same approved destroy action.
 
 ## Validation and references
 

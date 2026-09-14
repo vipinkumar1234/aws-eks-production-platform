@@ -32,10 +32,11 @@ module "waf" {
   tags      = merge(local.tags, { Region = "us-east-1" })
 }
 module "game_data" {
-  source      = "../../modules/dynamodb"
-  name        = "${local.name}-arena-grid"
-  kms_key_arn = module.kms.key_arn
-  tags        = local.tags
+  source                      = "../../modules/dynamodb"
+  name                        = "${local.name}-arena-grid"
+  kms_key_arn                 = module.kms.key_arn
+  deletion_protection_enabled = var.dynamodb_deletion_protection_enabled
+  tags                        = local.tags
 }
 
 module "vpc" {

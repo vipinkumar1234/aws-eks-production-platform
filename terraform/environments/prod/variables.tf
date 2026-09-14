@@ -86,3 +86,8 @@ variable "karpenter_cpu_limit" {
     error_message = "Workload CPU limit must be a whole number between 8 and 1000 vCPUs."
   }
 }
+variable "dynamodb_deletion_protection_enabled" {
+  type        = bool
+  default     = true
+  description = "Keep DynamoDB deletion protection enabled except during an approved destroy workflow."
+}

@@ -19,6 +19,6 @@ resource "aws_dynamodb_table" "this" {
   }
 
   point_in_time_recovery { enabled = true }
-  deletion_protection_enabled = true
+  deletion_protection_enabled = var.deletion_protection_enabled
   tags                        = merge(var.tags, { Name = var.name })
 }

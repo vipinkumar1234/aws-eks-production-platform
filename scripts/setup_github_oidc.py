@@ -7,6 +7,8 @@ from botocore.exceptions import ClientError
 ACCOUNT = '001495086648'
 ROLE = 'AutomationAdminAll'
 REPOSITORY = 'vipinkumar1234/aws-eks-production-platform'
+REPOSITORY_OWNER_ID = '110930371'
+REPOSITORY_ID = '1359084778'
 PROVIDER = f'arn:aws:iam::{ACCOUNT}:oidc-provider/token.actions.githubusercontent.com'
 
 
@@ -17,7 +19,8 @@ def trust_statement():
         'Condition': {'StringEquals': {
             'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
             'token.actions.githubusercontent.com:sub': [
-                f'repo:{REPOSITORY}:environment:dev', f'repo:{REPOSITORY}:environment:prod',
+                f'repo:vipinkumar1234@{REPOSITORY_OWNER_ID}/aws-eks-production-platform@{REPOSITORY_ID}:environment:dev',
+                f'repo:vipinkumar1234@{REPOSITORY_OWNER_ID}/aws-eks-production-platform@{REPOSITORY_ID}:environment:prod',
             ],
         }},
     }
