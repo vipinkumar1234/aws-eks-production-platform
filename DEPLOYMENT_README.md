@@ -8,7 +8,7 @@ Traffic: browser HTTPS -> CloudFront + WAF -> VPC origin -> private HTTP ALB -> 
 
 The workflow is configured for account **001495086648**, role **AutomationAdminAll**, repository **vipinkumar1234/aws-eks-production-platform**. The role ARN is not a credential and is committed directly in the workflow. No AWS access keys are stored in GitHub.
 
-Create GitHub environments **dev** and **prod** in repository Settings -> Environments. Restrict both to the **main** branch and enable required reviewers on the environments where you want a manual approval gate. The Terraform `apply` and `destroy` jobs both use these environments, so GitHub pauses them for approval before AWS credentials are requested. The application build also uses the **dev** environment for OIDC, so requiring reviewers on **dev** will also gate image publishing. Anyone able to run trusted deployment code can use this role's permissions, so protect main and these environments.
+Create GitHub environments **dev** and **prod** in repository Settings -> Environments. These are used for OIDC trust. Also create approval environments **dev-apply**, **dev-destroy**, **prod-apply** and **prod-destroy**. Restrict all of them to the **main** branch and enable required reviewers on the approval environments. Terraform `apply` waits on `<environment>-apply`; Terraform `destroy` waits on `<environment>-destroy`; the AWS credential step still uses **dev** or **prod** so the OIDC subject stays stable. Anyone able to run trusted deployment code can use this role's permissions, so protect main and these environments.
 
 Push the updated files to main. Use the normal AWS CloudShell user, authenticated as an administrator in account 001495086648. Do not run `sudo su -`: it changes the home directory and Python environment. If your prompt currently starts with `[root@`, run `exit` once to return to the CloudShell user. For a fresh checkout:
 
@@ -57,7 +57,7 @@ After trust setup, dispatch the Terraform workflow using its built-in defaults:
 | GitHub OIDC provider | Existing account-level provider created/reused in step 1 |
 | Image-role trust subject | GitHub numeric repository subject and selected GitHub environment |
 | Owner / cost centre | `vipin` / `gaming-test` |
-| Karpenter AMI | Regional Amazon AL2023 x86_64 EKS 1.34 recommendation resolved through SSM |
+| Karpenter AMI | Regional Amazon AL2023 x86_64 EKS 1.36 recommendation resolved through SSM |
 | Game URL | AWS-generated `https://<id>.cloudfront.net` |
 
 The role, provider, administrator list and GitHub trust subject no longer need to be copied into secrets/variables. `AWS_TERRAFORM_ROLE_ARN`, `ADMIN_ROLE_ARNS`, `GITHUB_OIDC_SUBJECTS`, `OWNER` and `COST_CENTER` are no longer read individually by this workflow. During GitHub Actions runs, `scripts/prepare_aws_deployment.py` builds the image-role trust subject from `GITHUB_REPOSITORY_OWNER_ID` and `GITHUB_REPOSITORY_ID` so it matches the customized numeric OIDC subject. It also grants EKS cluster-admin access to the account root principal because this lab environment is being administered from the root console session.
@@ -87,11 +87,11 @@ The Terraform workflow supports three manual actions:
 
 | Action | What it does | Approval gate |
 |---|---|---|
-| `plan` | Validates and produces an infrastructure plan only | Uses the selected GitHub environment |
-| `apply` | Creates or updates the environment | Uses the selected GitHub environment |
-| `destroy` | Disables DynamoDB deletion protection for the managed game table, then destroys the environment | Uses the selected GitHub environment |
+| `plan` | Validates and produces an infrastructure plan only | No approval gate |
+| `apply` | Creates or updates the environment | Uses `dev-apply` or `prod-apply` |
+| `destroy` | Disables DynamoDB deletion protection for the managed game table, then destroys the environment | Uses `dev-destroy` or `prod-destroy` |
 
-Configure required reviewers on GitHub environments **dev** and **prod** to make the approval gate active. Without required reviewers, GitHub still records the deployment environment, but it will not pause for approval.
+Configure required reviewers on the `*-apply` and `*-destroy` GitHub environments to make the approval gate active. Without required reviewers, GitHub still records the deployment environment, but it will not pause for approval.
 
 The bootstrap creates/secures the state bucket before init: ownership checks, public-access block, owner-enforced ownership, versioning, naming tags, encryption preservation and deny-insecure-transport policy. Its role needs S3 bucket configuration/read permissions including GetBucketTagging/PutBucketTagging, plus state-object GetObject/PutObject and lock-object GetObject/PutObject/DeleteObject. Existing KMS-encrypted state buckets also require key permissions. There is no DynamoDB state-lock table; Terraform uses the native S3 `.tflock`. Never delete the bucket during normal cleanup.
 
@@ -123,7 +123,7 @@ The application workflow uses `arn:aws:iam::001495086648:role/AutomationAdminAll
 
 The deployment now explicitly uses UID/GID 10001, `imagePullPolicy: Always`, and digest-based image rendering. CI keeps all Kubernetes security checks enabled. Actions were updated to Node.js 24 runtimes, including configure-aws-credentials v6, which accepts `allowed-account-ids`. tfsec receives `--minimum-severity HIGH --exclude-downloaded-modules` through its supported `additional_args` input and receives `github_token` to authenticate GitHub API requests. The scan excludes downloaded `.terraform/modules` internals because the authored EKS wrapper already enables secret encryption with the platform KMS key. These address the reported configuration warnings; future action releases, service errors and rate limits still require checking new runs.
 
-Images use immutable Git commit tags. Do not rerun a successful image push for the same commit; use the already published digest, or commit an actual image change before building again. Copy the initial `IMAGE_URI` from the workflow summary or resolve it with the command in step 6.
+Images use immutable Git commit tags. If a workflow is rerun for a commit SHA that already exists in ECR, the application workflow now reuses that existing digest and skips rebuild/push so ECR immutability does not fail the run. Copy the initial `IMAGE_URI` from the workflow summary or resolve it with the command in step 6.
 
 ## 6. Prepare a bootstrap host and render GitOps
 
@@ -131,7 +131,7 @@ You need a workstation or administration host with network access to the EKS API
 
 The EKS console shows `Unauthorized` when the currently signed-in AWS principal is not listed in EKS access entries. Even the AWS root user needs an EKS access entry when `enable_cluster_creator_admin_permissions = false`. The generated defaults now include `arn:aws:iam::001495086648:root`; run a new Terraform `dev` `apply`, wait a minute for EKS access-entry propagation, then refresh the EKS console. Verify with `aws eks list-access-entries --region ap-southeast-1 --cluster-name eks-platform-apse1-dev-eks`.
 
-Install Python 3.12, Terraform 1.14.0, AWS CLI v2, Helm and kubectl compatible with EKS 1.34. Commands below use Bash/WSL from the repository root. Python scripts also work from PowerShell. Authenticate to the correct AWS account, for example with AWS SSO and your selected AWS_PROFILE.
+Install Python 3.12, Terraform 1.14.0, AWS CLI v2, Helm and kubectl compatible with EKS 1.36. Commands below use Bash/WSL from the repository root. Python scripts also work from PowerShell. Authenticate to the correct AWS account, for example with AWS SSO and your selected AWS_PROFILE.
 
 ```bash
 python -m pip install boto3==1.43.89 PyYAML==6.0.2 jsonschema==4.26.0
@@ -207,7 +207,7 @@ Troubleshooting: 503 commonly means targets aren't registered/healthy; check Tar
 
 ## 9. Validate scaling and production readiness
 
-Karpenter 1.12.0 runs two controllers on the managed system group. The workload pool uses On-Demand c/m/r generation 6+ amd64 capacity. It batches pending pods and consolidates underused nodes after five minutes, with at most one voluntary disruption at a time. EKS retains its default scheduler; this is Karpenter bin packing/consolidation. The HPA scales two to four game replicas. Accurate resource requests are necessary; load-test the initial 50m CPU / 64Mi memory requests.
+Karpenter 1.12.0 runs two controllers on the managed system group. The managed system group uses two `t3.medium` Spot nodes. The workload pool uses Spot t/c/m generation 6+ amd64 capacity with 2 or 4 vCPUs. It batches pending pods and consolidates underused nodes after five minutes, with at most one voluntary disruption at a time. EKS retains its default scheduler; this is Karpenter bin packing/consolidation. The HPA scales two to four game replicas. Accurate resource requests are necessary; load-test the initial 50m CPU / 64Mi memory requests.
 
 ```bash
 kubectl get nodepools,nodeclaims,ec2nodeclasses
@@ -218,7 +218,7 @@ kubectl top nodes
 
 For a dev scale test, deploy a temporary approved workload with `nodeSelector: {workload-tier: application}` and sufficient resource requests to require more nodes, staying within the CPU cap. Verify NodeClaims become Ready and pods run. Remove that workload and observe eligible node consolidation. Do not manually scale the game against its HPA. Two-AZ spreading/PDBs can legitimately prevent consolidation; strict spreading can leave replicas Pending during an AZ outage. Karpenter does not resize system nodes.
 
-Node expiration is disabled; rotate tested AMI pins through Terraform and GitOps regularly and verify drift replacement. Before enabling Spot, verify the account's EC2 Spot service-linked role and test interruptions; they are not prevented by voluntary disruption budgets. No guaranteed On-Demand share is provided by a mixed pool.
+Node expiration is disabled; rotate tested AMI pins through Terraform and GitOps regularly and verify drift replacement. Spot interruptions can evict system and app pods, so keep this cost-optimized setting for dev/testing unless you have validated interruption handling, budgets and alerts. No guaranteed On-Demand baseline remains after this change.
 
 Before serving production users, configure paging/SLOs, quota and cost alerts, Karpenter metrics collection, DynamoDB restore drills, Cognito email/MFA policy, dependency patching and load/recovery tests. Existing Fluent Bit/S3 and EKS/VPC logs remain. This stack does not configure CloudFront/ALB access-log delivery, a metrics backend or paging destination. Default CloudFront certificate TLS policy is AWS-controlled; a custom minimum TLS policy/end-to-end TLS would require a different certificate architecture.
 
@@ -234,7 +234,7 @@ The new ALB uses the distinct `-edge` name to avoid colliding with the old contr
 
 Before destroy, remove the app TargetGroupBinding through Git/Argo and wait for pod deregistration while the controller still runs. Drain/delete Karpenter NodeClaims and confirm EC2 termination while its controller/IAM/VPC remain. Stop Argo reconciliation so it does not recreate Kubernetes resources while Terraform removes AWS infrastructure.
 
-To destroy from GitHub Actions, run Actions -> **terraform** -> Run workflow -> **main**, choose the environment, and set action **destroy**. GitHub uses the selected environment as the manual approval gate. The destroy job sets `TF_VAR_dynamodb_deletion_protection_enabled=false`, applies that single table update only if the table is already in Terraform state, then runs `terraform destroy`. This is intentional because the game table uses deletion protection by default for normal deploys.
+To destroy from GitHub Actions, run Actions -> **terraform** -> Run workflow -> **main**, choose the environment, and set action **destroy**. GitHub uses `dev-destroy` or `prod-destroy` as the manual approval gate. The destroy job sets `TF_VAR_dynamodb_deletion_protection_enabled=false`, applies that single table update only if the table is already in Terraform state, then runs `terraform destroy`. This is intentional because the game table uses deletion protection by default for normal deploys.
 
 Terraform removes CloudFront before its VPC origin/private ALB and then networking; AWS-managed VPC-origin ENIs may take time to disappear. Retain the state bucket and decide log retention explicitly. Never delete the state bucket as part of normal cleanup. If destroy fails because resources are still attached, wait for AWS cleanup or remove the remaining Kubernetes bindings/controllers, then rerun the same approved destroy action.
 

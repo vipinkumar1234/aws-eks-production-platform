@@ -61,32 +61,40 @@ jobs:
             echo "ready=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          existing_digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
           echo "$repository_uri"
           echo "ready=true" >> "$GITHUB_OUTPUT"
+          if [ -n "$existing_digest" ] && [ "$existing_digest" != "None" ]; then
+            echo "image_exists=true" >> "$GITHUB_OUTPUT"
+            echo "IMAGE_URI=$repository_uri@$existing_digest" >> "$GITHUB_ENV"
+            echo "Image tag \`$GITHUB_SHA\` already exists; reusing immutable digest \`$existing_digest\`." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "image_exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: aws-actions/amazon-ecr-login@v2
-        if: steps.ecr_repository.outputs.ready == 'true'
+        if: steps.ecr_repository.outputs.ready == 'true' && steps.ecr_repository.outputs.image_exists != 'true'
         id: ecr
       - uses: docker/build-push-action@v7
-        if: steps.ecr_repository.outputs.ready == 'true'
+        if: steps.ecr_repository.outputs.ready == 'true' && steps.ecr_repository.outputs.image_exists != 'true'
         with:
           context: application/sample-app
           push: false
           load: true
           tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
       - uses: aquasecurity/trivy-action@v0.36.0
-        if: steps.ecr_repository.outputs.ready == 'true'
+        if: steps.ecr_repository.outputs.ready == 'true' && steps.ecr_repository.outputs.image_exists != 'true'
         with:
           image-ref: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: 1
       - name: Push scanned image
-        if: steps.ecr_repository.outputs.ready == 'true'
+        if: steps.ecr_repository.outputs.ready == 'true' && steps.ecr_repository.outputs.image_exists != 'true'
         run: docker push "$IMAGE"
         env:
           IMAGE: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
       - name: Resolve immutable image digest
-        if: steps.ecr_repository.outputs.ready == 'true'
+        if: steps.ecr_repository.outputs.ready == 'true' && steps.ecr_repository.outputs.image_exists != 'true'
         run: |
           DIGEST=$(aws ecr describe-images --repository-name "$REPOSITORY" --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
           echo "IMAGE_URI=$REGISTRY/$REPOSITORY@$DIGEST" >> "$GITHUB_ENV"

@@ -41,9 +41,16 @@ jobs:
           working_directory: terraform
           additional_args: --minimum-severity HIGH --exclude-downloaded-modules
           github_token: ${{ github.token }}
-  deploy:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.action != 'destroy'
+  apply_approval:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.action == 'apply'
     needs: validate
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}-apply
+    steps:
+      - run: echo "Approved ${{ inputs.environment }} apply."
+  deploy:
+    if: always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.action != 'destroy' && needs.validate.result == 'success' && (inputs.action == 'plan' || needs.apply_approval.result == 'success')
+    needs: [validate, apply_approval]
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     permissions:
@@ -93,9 +100,16 @@ jobs:
         if: inputs.action == 'apply'
         run: |
           terraform -chdir="terraform/environments/$ENVIRONMENT" output -json dns_zone >> "$GITHUB_STEP_SUMMARY"
-  destroy:
+  destroy_approval:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.action == 'destroy'
     needs: validate
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}-destroy
+    steps:
+      - run: echo "Approved ${{ inputs.environment }} destroy."
+  destroy:
+    if: always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.action == 'destroy' && needs.validate.result == 'success' && needs.destroy_approval.result == 'success'
+    needs: [validate, destroy_approval]
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     permissions:

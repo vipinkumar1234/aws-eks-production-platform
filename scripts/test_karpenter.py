@@ -29,6 +29,8 @@ class KarpenterTest(unittest.TestCase):
         self.assertEqual(pool["spec"]["disruption"]["consolidationPolicy"], "WhenEmptyOrUnderutilized")
         self.assertEqual(pool["spec"]["disruption"]["budgets"], [{"nodes": "1"}])
         self.assertEqual(pool["spec"]["limits"]["cpu"], "32")
+        capacity = next(requirement for requirement in pool["spec"]["template"]["spec"]["requirements"] if requirement["key"] == "karpenter.sh/capacity-type")
+        self.assertEqual(capacity["values"], ["spot"])
         self.assertIn("instanceProfile", nodeclass["spec"])
         self.assertNotIn("role", nodeclass["spec"])
         self.assertFalse(nodeclass["spec"]["associatePublicIPAddress"])

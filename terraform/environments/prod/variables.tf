@@ -72,7 +72,7 @@ variable "cost_center" {
 
 variable "karpenter_ami_id" {
   type        = string
-  description = "Tested regional EKS 1.34 AL2023 x86_64 standard AMI; explicitly pinned"
+  description = "Tested regional EKS 1.36 AL2023 x86_64 standard AMI; explicitly pinned"
   validation {
     condition     = can(regex("^ami-[0-9a-f]{17}$", var.karpenter_ami_id))
     error_message = "Supply a pinned regional AL2023 x86_64 AMI ID."

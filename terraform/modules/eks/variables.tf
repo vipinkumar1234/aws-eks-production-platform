@@ -1,7 +1,7 @@
 variable "name" { type = string }
 variable "kubernetes_version" {
   type    = string
-  default = "1.34"
+  default = "1.36"
 }
 variable "vpc_id" { type = string }
 variable "private_subnets" { type = list(string) }

@@ -56,16 +56,16 @@ spec:
           values: [linux]
         - key: karpenter.sh/capacity-type
           operator: In
-          values: [on-demand]
+          values: [spot]
         - key: karpenter.k8s.aws/instance-category
           operator: In
-          values: [c, m, r]
+          values: [t, c, m]
         - key: karpenter.k8s.aws/instance-generation
           operator: Gt
           values: ["5"]
         - key: karpenter.k8s.aws/instance-cpu
           operator: In
-          values: ["2", "4", "8", "16"]
+          values: ["2", "4"]
       # Patch through reviewed AMI changes. Expiry otherwise bypasses budgets.
       expireAfter: Never
   limits:

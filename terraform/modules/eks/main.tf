@@ -53,11 +53,11 @@ module "eks" {
       iam_role_name        = "${var.name}-sys"
       launch_template_name = "${var.name}-system"
       labels               = { "workload-tier" = "system" }
-      instance_types       = ["m6i.large"]
+      instance_types       = ["t3.medium"]
       min_size             = 2
       max_size             = 2
       desired_size         = 2
-      capacity_type        = "ON_DEMAND"
+      capacity_type        = "SPOT"
       block_device_mappings = {
         root = {
           device_name = "/dev/xvda"

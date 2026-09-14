@@ -54,7 +54,7 @@ def main():
         raise SystemExit('TFVARS_JSON must be an object')
     ami = overrides.get('karpenter_ami_id') or os.getenv('PINNED_AMI')
     if not ami:
-        ami = session.client('ssm').get_parameter(Name='/aws/service/eks/optimized-ami/1.34/amazon-linux-2023/x86_64/standard/recommended/image_id')['Parameter']['Value']
+        ami = session.client('ssm').get_parameter(Name='/aws/service/eks/optimized-ami/1.36/amazon-linux-2023/x86_64/standard/recommended/image_id')['Parameter']['Value']
     values = prepare(environment, os.environ['GITHUB_REPOSITORY'], region, overrides, ami)
     # Empty dispatch input preserves an existing optional zone from TFVARS_JSON.
     if os.getenv('DNS_ZONE_NAME'):

@@ -112,7 +112,7 @@ data "aws_ami" "karpenter" {
   }
   filter {
     name   = "name"
-    values = ["amazon-eks-node-al2023-x86_64-standard-1.34-*"]
+    values = ["amazon-eks-node-al2023-x86_64-standard-1.36-*"]
   }
 }
 
