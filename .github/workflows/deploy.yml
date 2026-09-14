@@ -1,0 +1,315 @@
+name: deploy
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, prod]
+        default: dev
+        required: true
+      kubernetes_version:
+        type: choice
+        options: ["1.35", "1.36"]
+        default: "1.36"
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - uses: hashicorp/setup-terraform@v4
+        with: { terraform_version: "1.14.0" }
+      - run: terraform fmt -check -recursive terraform
+      - run: |
+          for environment in dev prod; do
+            terraform -chdir="terraform/environments/$environment" init -backend=false -input=false
+            terraform -chdir="terraform/environments/$environment" validate
+          done
+      - run: terraform -chdir=terraform/environments/dev test
+      - run: python -m pip install -r application/sample-app/requirements.txt PyYAML==6.0.2 boto3==1.43.89 jsonschema==4.26.0
+      - run: python -m unittest discover -s tests -v
+        working-directory: application/sample-app
+      - run: python scripts/validate_yaml.py
+      - run: python scripts/validate_karpenter.py
+      - run: python scripts/validate_targetgroupbinding.py
+      - uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: terraform
+          additional_args: --minimum-severity HIGH --exclude-downloaded-modules
+          github_token: ${{ github.token }}
+  terraform_plan:
+    if: github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_INPUT: "false"
+      ROOT_INPUTS: ${{ vars.TFVARS_JSON }}
+      PINNED_AMI: ${{ vars.KARPENTER_AMI_ID }}
+      DNS_ZONE_NAME: ${{ vars.DNS_ZONE_NAME }}
+      TF_VAR_infra_version: ${{ github.sha }}
+      TF_VAR_kubernetes_version: ${{ inputs.kubernetes_version }}
+      KUBERNETES_VERSION: ${{ inputs.kubernetes_version }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      REGION: ${{ inputs.environment == 'prod' && 'us-east-1' || 'ap-southeast-1' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: python -m pip install boto3==1.43.89
+      - uses: hashicorp/setup-terraform@v4
+        with: { terraform_version: "1.14.0" }
+      - name: Show OIDC trust claims
+        run: python scripts/print_oidc_claims.py
+        env:
+          EXPECTED_ENVIRONMENT: ${{ inputs.environment }}
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::001495086648:role/AutomationAdminAll
+          audience: sts.amazonaws.com
+          allowed-account-ids: "001495086648"
+          aws-region: ${{ env.REGION }}
+      - name: Resolve deployment defaults and regional AMI
+        run: python scripts/prepare_aws_deployment.py
+      - name: Create and secure state bucket before init
+        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --bucket "$STATE_BUCKET" --region "$REGION"
+      - run: terraform -chdir="terraform/environments/$ENVIRONMENT" plan -lock-timeout=5m -out=tfplan
+      - run: terraform -chdir="terraform/environments/$ENVIRONMENT" show -no-color tfplan > terraform-plan.txt
+      - name: Upload Terraform plan
+        uses: actions/upload-artifact@v6
+        with:
+          name: terraform-${{ inputs.environment }}-plan
+          path: |
+            terraform/environments/${{ inputs.environment }}/tfplan
+            terraform/environments/${{ inputs.environment }}/ci.auto.tfvars.json
+            terraform-plan.txt
+          retention-days: 7
+      - name: Show Terraform plan summary
+        run: |
+          {
+            echo "Terraform plan created for $ENVIRONMENT using EKS $KUBERNETES_VERSION."
+            echo ""
+            echo "Approve the $ENVIRONMENT-apply environment to apply this plan."
+          } >> "$GITHUB_STEP_SUMMARY"
+  terraform_approval:
+    if: github.ref == 'refs/heads/main'
+    needs: terraform_plan
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}-apply
+    steps:
+      - run: echo "Approved ${{ inputs.environment }} infrastructure apply."
+  terraform_apply:
+    if: github.ref == 'refs/heads/main'
+    needs: [terraform_plan, terraform_approval]
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_INPUT: "false"
+      ROOT_INPUTS: ${{ vars.TFVARS_JSON }}
+      PINNED_AMI: ${{ vars.KARPENTER_AMI_ID }}
+      DNS_ZONE_NAME: ${{ vars.DNS_ZONE_NAME }}
+      TF_VAR_infra_version: ${{ github.sha }}
+      TF_VAR_kubernetes_version: ${{ inputs.kubernetes_version }}
+      KUBERNETES_VERSION: ${{ inputs.kubernetes_version }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      REGION: ${{ inputs.environment == 'prod' && 'us-east-1' || 'ap-southeast-1' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: python -m pip install boto3==1.43.89
+      - uses: hashicorp/setup-terraform@v4
+        with: { terraform_version: "1.14.0" }
+      - name: Show OIDC trust claims
+        run: python scripts/print_oidc_claims.py
+        env:
+          EXPECTED_ENVIRONMENT: ${{ inputs.environment }}
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::001495086648:role/AutomationAdminAll
+          audience: sts.amazonaws.com
+          allowed-account-ids: "001495086648"
+          aws-region: ${{ env.REGION }}
+      - name: Resolve deployment defaults and regional AMI
+        run: python scripts/prepare_aws_deployment.py
+      - name: Create and secure state bucket before init
+        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --bucket "$STATE_BUCKET" --region "$REGION"
+      - name: Download Terraform plan
+        uses: actions/download-artifact@v6
+        with:
+          name: terraform-${{ inputs.environment }}-plan
+          path: .
+      - run: terraform -chdir="terraform/environments/$ENVIRONMENT" apply -lock-timeout=5m tfplan
+      - name: Show infrastructure outputs
+        run: |
+          for output in app_url github_actions_role_arn ecr_repository_url; do
+            value=$(terraform -chdir="terraform/environments/$ENVIRONMENT" output -raw "$output")
+            echo "$output: $value" >> "$GITHUB_STEP_SUMMARY"
+          done
+  application:
+    if: github.ref == 'refs/heads/main'
+    needs: terraform_apply
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      TF_INPUT: "false"
+      ROOT_INPUTS: ${{ vars.TFVARS_JSON }}
+      PINNED_AMI: ${{ vars.KARPENTER_AMI_ID }}
+      DNS_ZONE_NAME: ${{ vars.DNS_ZONE_NAME }}
+      TF_VAR_infra_version: ${{ github.sha }}
+      TF_VAR_kubernetes_version: ${{ inputs.kubernetes_version }}
+      KUBERNETES_VERSION: ${{ inputs.kubernetes_version }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      REGION: ${{ inputs.environment == 'prod' && 'us-east-1' || 'ap-southeast-1' }}
+      GITOPS_REPO_URL: https://github.com/vipinkumar1234/aws-eks-production-platform.git
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: python -m pip install boto3==1.43.89 PyYAML==6.0.2 jsonschema==4.26.0
+      - uses: hashicorp/setup-terraform@v4
+        with: { terraform_version: "1.14.0" }
+      - name: Show OIDC trust claims
+        run: python scripts/print_oidc_claims.py
+        env:
+          EXPECTED_ENVIRONMENT: ${{ inputs.environment }}
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::001495086648:role/AutomationAdminAll
+          audience: sts.amazonaws.com
+          allowed-account-ids: "001495086648"
+          aws-region: ${{ env.REGION }}
+      - name: Resolve ECR repository
+        id: ecr_repository
+        run: |
+          python scripts/prepare_aws_deployment.py
+          python scripts/terraform_init.py --environment "$ENVIRONMENT" --bucket "$STATE_BUCKET" --region "$REGION" --check-only
+          repository_uri=$(terraform -chdir="terraform/environments/$ENVIRONMENT" output -raw ecr_repository_url)
+          ECR_REPOSITORY="${repository_uri#*/}"
+          echo "ECR_REPOSITORY=$ECR_REPOSITORY" >> "$GITHUB_ENV"
+          repository_uri=$(aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" --query 'repositories[0].repositoryUri' --output text)
+          existing_digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
+          echo "repository_uri=$repository_uri" >> "$GITHUB_OUTPUT"
+          if [ -n "$existing_digest" ] && [ "$existing_digest" != "None" ]; then
+            echo "image_exists=true" >> "$GITHUB_OUTPUT"
+            echo "IMAGE_URI=$repository_uri@$existing_digest" >> "$GITHUB_ENV"
+            echo "Reusing existing immutable image digest \`$existing_digest\`." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "image_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: aws-actions/amazon-ecr-login@v2
+        if: steps.ecr_repository.outputs.image_exists != 'true'
+        id: ecr
+      - uses: docker/build-push-action@v7
+        if: steps.ecr_repository.outputs.image_exists != 'true'
+        with:
+          context: application/sample-app
+          push: false
+          load: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+      - uses: aquasecurity/trivy-action@v0.36.0
+        if: steps.ecr_repository.outputs.image_exists != 'true'
+        with:
+          image-ref: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+      - name: Push scanned image
+        if: steps.ecr_repository.outputs.image_exists != 'true'
+        run: docker push "$IMAGE"
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+      - name: Resolve immutable image digest
+        if: steps.ecr_repository.outputs.image_exists != 'true'
+        run: |
+          DIGEST=$(aws ecr describe-images --repository-name "$REPOSITORY" --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
+          echo "IMAGE_URI=$REGISTRY/$REPOSITORY@$DIGEST" >> "$GITHUB_ENV"
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPOSITORY: ${{ env.ECR_REPOSITORY }}
+      - name: Resolve deployment defaults for GitOps rendering
+        run: python scripts/prepare_aws_deployment.py
+      - name: Initialize Terraform state for GitOps rendering
+        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --bucket "$STATE_BUCKET" --region "$REGION" --check-only
+      - name: Render GitOps
+        run: |
+          python scripts/render_gitops.py --environment "$ENVIRONMENT"
+          echo "Rendered $ENVIRONMENT GitOps with image \`$IMAGE_URI\`." >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit rendered GitOps
+        run: |
+          if git diff --quiet -- "gitops/environments/$ENVIRONMENT"; then
+            echo "No GitOps changes to commit." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "gitops/environments/$ENVIRONMENT"
+          git commit -m "Render $ENVIRONMENT GitOps with scanned image digest"
+          git pull --rebase origin main
+          git push origin HEAD:main
+          echo "Committed rendered $ENVIRONMENT GitOps to main." >> "$GITHUB_STEP_SUMMARY"
+  bootstrap:
+    if: github.ref == 'refs/heads/main'
+    needs: application
+    runs-on: [self-hosted, linux, eks-platform-vpc]
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_INPUT: "false"
+      ROOT_INPUTS: ${{ vars.TFVARS_JSON }}
+      PINNED_AMI: ${{ vars.KARPENTER_AMI_ID }}
+      DNS_ZONE_NAME: ${{ vars.DNS_ZONE_NAME }}
+      TF_VAR_infra_version: ${{ github.sha }}
+      TF_VAR_kubernetes_version: ${{ inputs.kubernetes_version }}
+      KUBERNETES_VERSION: ${{ inputs.kubernetes_version }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      REGION: ${{ inputs.environment == 'prod' && 'us-east-1' || 'ap-southeast-1' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: python -m pip install boto3==1.43.89 PyYAML==6.0.2 jsonschema==4.26.0
+      - uses: hashicorp/setup-terraform@v4
+        with: { terraform_version: "1.14.0" }
+      - uses: azure/setup-kubectl@v4
+      - uses: azure/setup-helm@v4
+      - name: Show OIDC trust claims
+        run: python scripts/print_oidc_claims.py
+        env:
+          EXPECTED_ENVIRONMENT: ${{ inputs.environment }}
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::001495086648:role/AutomationAdminAll
+          audience: sts.amazonaws.com
+          allowed-account-ids: "001495086648"
+          aws-region: ${{ env.REGION }}
+      - name: Resolve deployment defaults
+        run: python scripts/prepare_aws_deployment.py
+      - name: Initialize Terraform state
+        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --bucket "$STATE_BUCKET" --region "$REGION" --check-only
+      - name: Bootstrap Kubernetes platform
+        run: python scripts/bootstrap_platform.py --environment "$ENVIRONMENT"

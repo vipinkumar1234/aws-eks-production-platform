@@ -44,7 +44,7 @@ AutomationAdminAll must have permission to provision the resources in this repos
 
 ## 2. Defaults: no required infrastructure secrets or variables
 
-After trust setup, dispatch the Terraform workflow using its built-in defaults:
+After trust setup, dispatch the **deploy** workflow. It uses these built-in defaults:
 
 | Setting | Automatic value |
 |---|---|
@@ -80,13 +80,22 @@ If you also want a Route 53 public zone, set the GitHub environment variable `DN
 
 Creating a zone does **not** register a domain, delegate its name servers, or attach a custom hostname to CloudFront. The game continues using the generated HTTPS test URL. A custom hostname additionally requires registrar delegation, ACM validation and distribution alias configuration; those are not claimed as automated by the optional zone resource. Arbitrary domain names cannot be used as owned HTTPS domains. For this test deployment, skip the unused zone and its cost.
 
-## 4. Deploy infrastructure with GitHub Actions
+## 4. Deploy the full stack with one ordered workflow
 
-Run Actions -> **terraform** -> Run workflow -> **main**, **dev**, **plan**. Review the result. Then dispatch **apply**. The apply run calculates and applies a fresh plan, so review changes between runs and enforce your environment approval policy.
+Use Actions -> **deploy** -> Run workflow -> **main**. Choose the environment and Kubernetes version. This is the recommended first-run workflow because it enforces the correct order:
+
+1. Validate Terraform, Kubernetes manifests, scripts and app tests.
+2. Wait at the `dev-apply` or `prod-apply` approval environment.
+3. Apply Terraform infrastructure.
+4. Build, scan and push the application image to ECR.
+5. Render `gitops/environments/<environment>` from Terraform outputs and the immutable image digest.
+6. Commit the rendered GitOps tree directly to `main`.
+7. Run the Kubernetes bootstrap from a VPC-connected self-hosted runner.
+8. Wait for Karpenter, Argo CD, AWS Load Balancer Controller, sample app rollout and healthy ALB targets.
 
 For a new cluster, select Kubernetes version **1.36**. For an existing cluster already created at **1.34**, do not select 1.36 first. EKS rejects skipped minor upgrades, so run **dev / apply / 1.35**, wait for it to finish, then run **dev / apply / 1.36**. Use the same sequence for prod when it already exists at 1.34.
 
-The Terraform workflow supports three manual actions:
+The separate **terraform** workflow is still available for plan, apply and destroy operations when you need to operate only the infrastructure layer:
 
 | Action | What it does | Approval gate |
 |---|---|---|
@@ -98,13 +107,13 @@ Configure required reviewers on the `*-apply` and `*-destroy` GitHub environment
 
 The bootstrap creates/secures the state bucket before init: ownership checks, public-access block, owner-enforced ownership, versioning, naming tags, encryption preservation and deny-insecure-transport policy. Its role needs S3 bucket configuration/read permissions including GetBucketTagging/PutBucketTagging, plus state-object GetObject/PutObject and lock-object GetObject/PutObject/DeleteObject. Existing KMS-encrypted state buckets also require key permissions. There is no DynamoDB state-lock table; Terraform uses the native S3 `.tflock`. Never delete the bucket during normal cleanup.
 
-Terraform creates the private ALB/listener/target group, CloudFront VPC origin/distribution, CloudFront-scoped WAF, EKS, data/auth resources and Karpenter AWS resources. CloudFront deployment can take several minutes. The workflow summary displays **app_url**, **github_actions_role_arn** and **ecr_repository_url**. The URL can return 503 until application pods are registered; this is expected before steps 5-8.
+Terraform creates the private ALB/listener/target group, CloudFront VPC origin/distribution, CloudFront-scoped WAF, EKS, data/auth resources and Karpenter AWS resources. CloudFront deployment can take several minutes. The workflow summary displays **app_url**, **github_actions_role_arn** and **ecr_repository_url**. The URL can return 503 until the bootstrap job registers healthy application pod IPs; the ordered **deploy** workflow waits for that before reporting completion.
 
 Terraform computes Cognito URLs from the CloudFront domain: `https://<id>.cloudfront.net/auth/callback` and `https://<id>.cloudfront.net/`. Distribution recreation changes that address and requires rendering/redeploying the workload configuration.
 
-## 5. Publish the application image
+## 5. Component workflows for recovery and partial changes
 
-After apply, add to GitHub dev:
+The **application** workflow is retained as a manual component workflow for rebuilding and redeploying the app after infrastructure already exists. It does not auto-run on pushes to main, so the ordered **deploy** workflow remains the first-run entry point. After Terraform has created ECR, add this optional GitHub environment variable if you do not want to use the automatic repository name:
 
 | Type | Name | Value |
 |---|---|---|
@@ -112,17 +121,17 @@ After apply, add to GitHub dev:
 
 No GitHub PR token secret is required. The application workflow uses the built-in `GITHUB_TOKEN` with job-level `contents: write` permission to commit the rendered GitOps tree directly to `main`.
 
-Run Actions -> **application** on main. It tests/scans and pushes the image. If Terraform has not created ECR yet, the workflow exits cleanly and writes a summary telling you to run Terraform `dev` `apply` first. The Docker build upgrades Debian packages before installing the app so the image picks up current base-image security fixes. Trivy fails the build for HIGH/CRITICAL vulnerabilities that have a fix; unfixed OS package findings are ignored so the build is not blocked by base-image CVEs without an upstream patch. After ECR exists, the workflow renders the dev GitOps tree from Terraform outputs, commits `gitops/environments/dev` directly to `main`, then runs the Kubernetes bootstrap job on the VPC-connected runner.
+Run Actions -> **application** on main only after infrastructure exists. It tests/scans and pushes the image. If Terraform has not created ECR yet, the workflow exits cleanly and writes a summary telling you to run the ordered **deploy** workflow first. The Docker build upgrades Debian packages before installing the app so the image picks up current base-image security fixes. Trivy fails the build for HIGH/CRITICAL vulnerabilities that have a fix; unfixed OS package findings are ignored so the build is not blocked by base-image CVEs without an upstream patch. After ECR exists, the workflow renders the dev GitOps tree from Terraform outputs, commits `gitops/environments/dev` directly to `main`, then runs the Kubernetes bootstrap job on the VPC-connected runner.
 
-The application workflow uses `arn:aws:iam::001495086648:role/AutomationAdminAll` directly, just like Terraform. An old `AWS_APP_ROLE_ARN` secret is no longer read. CloudShell is needed for the initial trust setup only; routine infrastructure deployment, image publishing and GitOps rendering run in GitHub Actions. Kubernetes bootstrap is automated too, but the runner must have the network access described in step 6.
+The **platform-bootstrap** workflow is retained for recovery when the image and rendered GitOps tree already exist and only the Kubernetes bootstrap/sync needs to be rerun. The application and platform-bootstrap workflows use `arn:aws:iam::001495086648:role/AutomationAdminAll` directly, just like Terraform. An old `AWS_APP_ROLE_ARN` secret is no longer read. CloudShell is needed for the initial trust setup only; routine infrastructure deployment, image publishing and GitOps rendering run in GitHub Actions. Kubernetes bootstrap is automated too, but the runner must have the network access described in step 6.
 
 ### Recover from the reported CI failures
 
 1. Commit and push these fixes to **main**. Start new workflow runs on that commit; rerunning an old failed run uses its old workflow definition.
 2. Create/check GitHub environments **dev** and **prod**, restricting deployment branches to **main**. Both workflows request `id-token: write` and audience `sts.amazonaws.com`.
 3. In normal-user CloudShell, update your repository checkout and run the setup and `--check-only` commands in step 1 above. An administrator policy alone does not authorize GitHub federation: the account needs the OIDC provider and environment-scoped role trust.
-4. Run a new Terraform **dev plan**, then **apply** after reviewing the plan and approving the GitHub environment gate. Wait for ECR to exist before starting the application workflow. Configure the ECR repository variable listed above.
-5. Run a new **application** workflow on main. It renders and commits GitOps using the real published image digest, then starts the bootstrap job. The source image placeholder is a rendering template and must never be deployed directly.
+4. Run a new **deploy** workflow from main. Approve `dev-apply` or `prod-apply` when GitHub asks. The workflow creates infrastructure first, then builds the image, renders GitOps, commits it and bootstraps Kubernetes.
+5. Use the separate **application** workflow only for later app-only rebuilds. The source image placeholder is a rendering template and must never be deployed directly.
 6. If AWS still reports an invalid web identity token after the configuration check passes, collect the full new authentication error and the safe `--check-only` output. The check validates configuration, not a live GitHub token. Investigate AWS STS/provider validation using the [AWS troubleshooting guide](https://repost.aws/knowledge-center/iam-sts-invalididentitytoken); do not share raw OIDC tokens or delete a shared provider.
 
 The deployment now explicitly uses UID/GID 10001, `imagePullPolicy: Always`, and digest-based image rendering. CI keeps all Kubernetes security checks enabled. Actions were updated to Node.js 24 runtimes, including configure-aws-credentials v6, which accepts `allowed-account-ids`. tfsec receives `--minimum-severity HIGH --exclude-downloaded-modules` through its supported `additional_args` input and receives `github_token` to authenticate GitHub API requests. The scan excludes downloaded `.terraform/modules` internals because the authored EKS wrapper already enables secret encryption with the platform KMS key. These address the reported configuration warnings; future action releases, service errors and rate limits still require checking new runs.
