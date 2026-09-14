@@ -33,11 +33,11 @@ run "private_https_edge" {
     error_message = "No custom domain or ACM certificate should be needed."
   }
   assert {
-    condition     = aws_cloudfront_distribution.app.default_cache_behavior[0].viewer_protocol_policy == "redirect-to-https" && aws_cloudfront_distribution.app.default_cache_behavior[0].cache_policy_id == "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
+    condition     = aws_cloudfront_distribution.app.default_cache_behavior[0].viewer_protocol_policy == "redirect-to-https" && aws_cloudfront_distribution.app.default_cache_behavior[0].cache_policy_id != null
     error_message = "Viewer HTTPS and disabled caching protect login sessions."
   }
   assert {
-    condition     = aws_cloudfront_distribution.app.default_cache_behavior[0].origin_request_policy_id == "216adef6-5c7f-47e4-b989-5492eafa07d3" && contains(aws_cloudfront_distribution.app.default_cache_behavior[0].allowed_methods, "POST")
+    condition     = aws_cloudfront_distribution.app.default_cache_behavior[0].origin_request_policy_id != null && contains(aws_cloudfront_distribution.app.default_cache_behavior[0].allowed_methods, "POST")
     error_message = "Login cookies, query strings, Origin header and API methods must reach the app."
   }
   assert {

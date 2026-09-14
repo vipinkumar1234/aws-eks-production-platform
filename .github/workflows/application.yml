@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: [application/**, .github/workflows/application.yml]
+    paths: [application/**, scripts/**, .github/workflows/application.yml]
 concurrency:
   group: application-${{ github.ref }}
   cancel-in-progress: false
@@ -34,6 +34,10 @@ jobs:
       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'eks-platform-apse1-dev-sample-app' }}
     steps:
       - uses: actions/checkout@v5
+      - name: Show OIDC trust claims
+        run: python3 scripts/print_oidc_claims.py
+        env:
+          EXPECTED_ENVIRONMENT: dev
       - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::001495086648:role/AutomationAdminAll

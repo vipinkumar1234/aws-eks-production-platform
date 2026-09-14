@@ -28,7 +28,7 @@ resource "aws_lb_target_group" "app" {
   }
   tags = merge(var.tags, { Name = "${var.name}-game" })
 }
-# HTTPS terminates at CloudFront. HTTP is confined to the VPC origin path.
+#tfsec:ignore:aws-elb-http-not-used HTTPS terminates at CloudFront; this private listener accepts only the AWS-managed CloudFront VPC origin security group.
 resource "aws_lb_listener" "app" {
   load_balancer_arn = aws_lb.app.arn
   port              = 80
@@ -127,6 +127,7 @@ resource "aws_cloudfront_distribution" "app" {
   restrictions {
     geo_restriction { restriction_type = "none" }
   }
+  #tfsec:ignore:aws-cloudfront-use-secure-tls-policy No-domain deployments must use the default *.cloudfront.net certificate, and AWS fixes that security policy to TLSv1.
   viewer_certificate { cloudfront_default_certificate = true }
   tags       = merge(var.tags, { Name = "${var.name}-cdn" })
   depends_on = [aws_vpc_security_group_ingress_rule.alb_from_cloudfront]

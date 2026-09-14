@@ -62,6 +62,10 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
+      - name: Show OIDC trust claims
+        run: python scripts/print_oidc_claims.py
+        env:
+          EXPECTED_ENVIRONMENT: ${{ inputs.environment }}
       - run: python -m pip install boto3==1.43.89
       - uses: hashicorp/setup-terraform@v4
         with: { terraform_version: "1.14.0" }
