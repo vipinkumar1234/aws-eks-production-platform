@@ -83,7 +83,7 @@ jobs:
       - name: Resolve deployment defaults and regional AMI
         run: python scripts/prepare_aws_deployment.py
       - name: Create and secure state bucket before init
-        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --bucket "$STATE_BUCKET" --region "$REGION"
+        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --region "$REGION"
       - run: terraform -chdir="terraform/environments/$ENVIRONMENT" plan -lock-timeout=5m -out=tfplan
       - run: terraform -chdir="terraform/environments/$ENVIRONMENT" show -no-color tfplan > terraform-plan.txt
       - name: Upload Terraform plan
@@ -148,7 +148,7 @@ jobs:
       - name: Resolve deployment defaults and regional AMI
         run: python scripts/prepare_aws_deployment.py
       - name: Create and secure state bucket before init
-        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --bucket "$STATE_BUCKET" --region "$REGION"
+        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --region "$REGION"
       - name: Download Terraform plan
         uses: actions/download-artifact@v6
         with:
@@ -202,7 +202,7 @@ jobs:
         id: ecr_repository
         run: |
           python scripts/prepare_aws_deployment.py
-          python scripts/terraform_init.py --environment "$ENVIRONMENT" --bucket "$STATE_BUCKET" --region "$REGION" --check-only
+          python scripts/terraform_init.py --environment "$ENVIRONMENT" --region "$REGION" --check-only
           repository_uri=$(terraform -chdir="terraform/environments/$ENVIRONMENT" output -raw ecr_repository_url)
           ECR_REPOSITORY="${repository_uri#*/}"
           echo "ECR_REPOSITORY=$ECR_REPOSITORY" >> "$GITHUB_ENV"
@@ -249,7 +249,7 @@ jobs:
       - name: Resolve deployment defaults for GitOps rendering
         run: python scripts/prepare_aws_deployment.py
       - name: Initialize Terraform state for GitOps rendering
-        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --bucket "$STATE_BUCKET" --region "$REGION" --check-only
+        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --region "$REGION" --check-only
       - name: Render GitOps
         run: |
           python scripts/render_gitops.py --environment "$ENVIRONMENT"
@@ -310,6 +310,6 @@ jobs:
       - name: Resolve deployment defaults
         run: python scripts/prepare_aws_deployment.py
       - name: Initialize Terraform state
-        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --bucket "$STATE_BUCKET" --region "$REGION" --check-only
+        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --region "$REGION" --check-only
       - name: Bootstrap Kubernetes platform
         run: python scripts/bootstrap_platform.py --environment "$ENVIRONMENT"

@@ -93,3 +93,13 @@ class BootstrapTest(unittest.TestCase):
             terraform_init.main()
         self.assertEqual(events[0], 'bucket')
         self.assertIn('-backend-config=use_lockfile=true', events[1])
+
+    def test_init_uses_state_bucket_environment(self):
+        events = []
+        with patch('sys.argv', ['terraform_init.py', '--environment', 'dev']), \
+             patch.dict('os.environ', {'STATE_BUCKET': 'test-state'}, clear=False), \
+             patch('terraform_init.ensure_bucket', side_effect=lambda *a: events.append(a)), \
+             patch('terraform_init.subprocess.run', side_effect=lambda *a, **kw: events.append(a[0])):
+            terraform_init.main()
+        self.assertEqual(events[0][0], 'test-state')
+        self.assertIn('-backend-config=bucket=test-state', events[1])

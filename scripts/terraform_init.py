@@ -15,9 +15,9 @@ def main():
     parser.add_argument('--region')
     parser.add_argument('--check-only', action='store_true', help='Require an existing bucket; used for destroy')
     args = parser.parse_args()
-    bucket = args.bucket or os.environ.get('TF_STATE_BUCKET_' + args.environment.upper())
+    bucket = args.bucket or os.environ.get('STATE_BUCKET') or os.environ.get('TF_STATE_BUCKET_' + args.environment.upper())
     if not bucket:
-        parser.error('Set --bucket or TF_STATE_BUCKET_DEV/TF_STATE_BUCKET_PROD')
+        parser.error('Set --bucket, STATE_BUCKET, or TF_STATE_BUCKET_DEV/TF_STATE_BUCKET_PROD')
     region = args.region or ('ap-southeast-1' if args.environment == 'dev' else 'us-east-1')
     tags = {'Environment': args.environment, 'Project': json.loads(os.getenv('ROOT_INPUTS') or '{}').get('project', 'eks-platform')}
     for key, variable in [('Project', 'project'), ('Owner', 'owner'), ('CostCenter', 'cost_center')]:

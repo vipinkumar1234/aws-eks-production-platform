@@ -50,6 +50,6 @@ jobs:
       - name: Resolve deployment defaults and regional AMI
         run: python scripts/prepare_aws_deployment.py
       - name: Initialize Terraform state
-        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --bucket "$STATE_BUCKET" --region "$REGION" --check-only
+        run: python scripts/terraform_init.py --environment "$ENVIRONMENT" --region "$REGION" --check-only
       - name: Bootstrap Kubernetes platform
         run: python scripts/bootstrap_platform.py --environment "$ENVIRONMENT"
