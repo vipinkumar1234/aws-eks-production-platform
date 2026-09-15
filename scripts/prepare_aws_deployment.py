@@ -77,6 +77,9 @@ def main():
         output.write(f'STATE_BUCKET={bucket}\n')
         for name in ('owner', 'cost_center', 'project'):
             output.write(f'TF_VAR_{name}={values.get(name, "eks-platform")}\n')
+    if os.getenv('GITHUB_OUTPUT'):
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+            output.write(f'state_bucket={bucket}\n')
     print(f'Prepared {environment} in account {ACCOUNT}; EKS {values["kubernetes_version"]}; AMI {values["karpenter_ami_id"]}; state bucket {bucket}')
 
 

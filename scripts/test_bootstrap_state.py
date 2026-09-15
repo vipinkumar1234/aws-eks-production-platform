@@ -103,3 +103,13 @@ class BootstrapTest(unittest.TestCase):
             terraform_init.main()
         self.assertEqual(events[0][0], 'test-state')
         self.assertIn('-backend-config=bucket=test-state', events[1])
+
+    def test_init_uses_default_state_bucket_when_environment_is_missing(self):
+        events = []
+        with patch('sys.argv', ['terraform_init.py', '--environment', 'dev', '--region', 'ap-southeast-1']), \
+             patch.dict('os.environ', {'STATE_BUCKET': '', 'TF_STATE_BUCKET_DEV': ''}, clear=False), \
+             patch('terraform_init.ensure_bucket', side_effect=lambda *a: events.append(a)), \
+             patch('terraform_init.subprocess.run', side_effect=lambda *a, **kw: events.append(a[0])):
+            terraform_init.main()
+        self.assertEqual(events[0][0], 'eks-platform-001495086648-ap-southeast-1-dev-tfstate')
+        self.assertIn('-backend-config=bucket=eks-platform-001495086648-ap-southeast-1-dev-tfstate', events[1])
